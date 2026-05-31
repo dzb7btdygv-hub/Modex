@@ -1,20 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Activity,
-  AppWindow,
-  CheckCircle2,
-  Command,
-  FolderOpen,
-  Loader2,
-  Play,
-  Search,
-  Settings,
-  ShieldCheck,
-  Square,
-  Terminal,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import brand from "../assets/brand/modex-wordmark.png";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { CodexRpc } from "./codexRpc";
 
 type CodexPhase = "stopped" | "starting" | "running";
 
@@ -26,189 +12,297 @@ type CodexStatus = {
   message: string | null;
 };
 
-const stoppedStatus: CodexStatus = {
-  phase: "stopped",
-  wsUrl: null,
-  readyzUrl: null,
-  healthzUrl: null,
-  message: null,
+type MessageRole = "user" | "assistant" | "system";
+
+type ChatMessage = {
+  id: string;
+  role: MessageRole;
+  text: string;
+  pending?: boolean;
 };
 
-const statusLabel: Record<CodexPhase, string> = {
-  stopped: "Stopped",
-  starting: "Starting",
-  running: "Running",
+type ThreadStartResponse = {
+  thread: {
+    id: string;
+  };
 };
+
+const isTauri = "__TAURI_INTERNALS__" in window;
 
 function App() {
-  const isTauri = "__TAURI_INTERNALS__" in window;
-  const [status, setStatus] = useState<CodexStatus>(stoppedStatus);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [status, setStatus] = useState("Starting Codex.");
+  const [ready, setReady] = useState(false);
+  const [turnRunning, setTurnRunning] = useState(false);
 
-  const canStop = status.phase === "running";
-  const isRunning = status.phase === "running";
+  const rpcRef = useRef<CodexRpc | null>(null);
+  const threadIdRef = useRef<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  async function refreshStatus() {
-    if (!isTauri) return;
-    try {
-      setStatus(await invoke<CodexStatus>("codex_status"));
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  async function startCodex() {
-    if (!isTauri) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await invoke<CodexStatus>("start_codex"));
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function stopCodex() {
-    if (!isTauri) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await invoke<CodexStatus>("stop_codex"));
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    refreshStatus();
-    const interval = window.setInterval(refreshStatus, 5000);
-    return () => window.clearInterval(interval);
+  const addSystemMessage = useCallback((text: string) => {
+    setMessages((current) => [
+      ...current,
+      { id: `system-${crypto.randomUUID()}`, role: "system", text },
+    ]);
   }, []);
 
-  const healthText = useMemo(() => {
-    if (error) return error;
-    if (status.message) return status.message;
-    if (status.wsUrl) return status.wsUrl;
-    if (!isTauri) return "Open Modex as the desktop app to control the Codex engine.";
-    return "Codex app-server is ready to be started.";
-  }, [error, isTauri, status.message, status.wsUrl]);
+  const handleNotification = useCallback(
+    (method: string, params: unknown) => {
+      const data = params as Record<string, unknown> | null;
+
+      switch (method) {
+        case "item/started": {
+          const item = data?.item as Record<string, unknown> | undefined;
+          if (item?.type === "agentMessage" && typeof item.id === "string") {
+            const id = `assistant-${item.id}`;
+            setMessages((current) =>
+              current.some((message) => message.id === id)
+                ? current
+                : [...current, { id, role: "assistant", text: "", pending: true }],
+            );
+          }
+          break;
+        }
+        case "item/agentMessage/delta": {
+          if (!data || typeof data.itemId !== "string" || typeof data.delta !== "string") {
+            break;
+          }
+
+          const id = `assistant-${data.itemId}`;
+          const delta = data.delta;
+          setMessages((current) => {
+            const index = current.findIndex((message) => message.id === id);
+            if (index === -1) {
+              return [...current, { id, role: "assistant", text: delta, pending: true }];
+            }
+
+            return current.map((message, messageIndex) =>
+              messageIndex === index
+                ? { ...message, text: `${message.text}${delta}`, pending: true }
+                : message,
+            );
+          });
+          break;
+        }
+        case "item/completed": {
+          const item = data?.item as Record<string, unknown> | undefined;
+          if (item?.type === "agentMessage" && typeof item.id === "string") {
+            const id = `assistant-${item.id}`;
+            const text = typeof item.text === "string" ? item.text : "";
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === id ? { ...message, text, pending: false } : message,
+              ),
+            );
+          }
+          break;
+        }
+        case "turn/completed": {
+          setTurnRunning(false);
+          setStatus("Ready.");
+
+          const turn = data?.turn as Record<string, unknown> | undefined;
+          const error = turn?.error;
+          if (error) addSystemMessage(formatError(error));
+          break;
+        }
+        case "error": {
+          setTurnRunning(false);
+          setStatus("Codex returned an error.");
+          addSystemMessage(formatError(data?.error ?? params));
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [addSystemMessage],
+  );
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function boot() {
+      if (!isTauri) {
+        setStatus("Open Modex as the desktop app to use chat.");
+        return;
+      }
+
+      try {
+        const codex = await ensureCodexRunning();
+        if (cancelled) return;
+
+        setStatus("Connecting to Codex.");
+        const rpc = await CodexRpc.connect(
+          codex.wsUrl,
+          handleNotification,
+          (reason) => {
+            if (cancelled) return;
+            rpcRef.current = null;
+            threadIdRef.current = null;
+            setReady(false);
+            setTurnRunning(false);
+            setStatus(reason);
+          },
+        );
+
+        if (cancelled) {
+          rpc.close();
+          return;
+        }
+
+        rpcRef.current = rpc;
+
+        await rpc.request("initialize", {
+          clientInfo: { name: "modex", title: "Modex", version: "0.1.0" },
+          capabilities: { experimentalApi: true, requestAttestation: false },
+        });
+
+        if (cancelled) return;
+
+        const thread = await rpc.request<ThreadStartResponse>("thread/start", {
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          ephemeral: true,
+        });
+
+        if (cancelled) return;
+
+        threadIdRef.current = thread.thread.id;
+        setReady(true);
+        setStatus("Ready.");
+      } catch (error) {
+        if (cancelled) return;
+        setReady(false);
+        setStatus("Codex is not ready.");
+        addSystemMessage(formatError(error));
+      }
+    }
+
+    boot();
+
+    return () => {
+      cancelled = true;
+      rpcRef.current?.close();
+      rpcRef.current = null;
+    };
+  }, [addSystemMessage, handleNotification]);
+
+  async function submitMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const text = draft.trim();
+    const rpc = rpcRef.current;
+    const threadId = threadIdRef.current;
+
+    if (!text || !rpc || !threadId || turnRunning) return;
+
+    setDraft("");
+    setTurnRunning(true);
+    setStatus("Thinking.");
+    setMessages((current) => [
+      ...current,
+      { id: `user-${crypto.randomUUID()}`, role: "user", text },
+    ]);
+
+    try {
+      await rpc.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text, text_elements: [] }],
+      });
+    } catch (error) {
+      setTurnRunning(false);
+      setStatus("Could not send message.");
+      addSystemMessage(formatError(error));
+    }
+  }
+
+  const canSend = ready && !turnRunning && draft.trim().length > 0;
 
   return (
-    <main className="shell">
-      <aside className="sidebar">
-        <img className="brand" src={brand} alt="Modex" />
-
-        <nav className="nav" aria-label="Primary">
-          <button className="navItem active" type="button">
-            <Terminal size={17} />
-            Sessions
-          </button>
-          <button className="navItem" type="button">
-            <Search size={17} />
-            Search
-          </button>
-          <button className="navItem" type="button">
-            <Command size={17} />
-            Palette
-          </button>
-          <button className="navItem" type="button">
-            <FolderOpen size={17} />
-            Projects
-          </button>
-        </nav>
-
-        <div className="sidebarFooter">
-          <button className="navItem" type="button">
-            <Settings size={17} />
-            Settings
-          </button>
-        </div>
-      </aside>
-
-      <section className="content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Modex v0.1</p>
-            <h1>Codex engine, Modex workspace.</h1>
+    <main className="chatShell">
+      <section className="conversation" aria-live="polite">
+        {messages.length === 0 ? (
+          <div className="emptyState">
+            <h1>Modex</h1>
+            <p>{status}</p>
           </div>
-          <div className={`status ${status.phase}`}>
-            <span />
-            {statusLabel[status.phase]}
-          </div>
-        </header>
-
-        <section className="heroPanel">
-          <div className="heroCopy">
-            <div className="heroIcon">
-              <AppWindow size={24} />
-            </div>
-            <h2>Start the local Codex app-server.</h2>
-            <p>
-              Modex launches Codex as a managed sidecar, tracks its process,
-              and keeps the UI ready for sessions, approvals, diffs, and
-              project tools.
-            </p>
-
-            <div className="actions">
-              <button className="primary" disabled={!isTauri || busy || isRunning} onClick={startCodex} type="button">
-                {busy && !canStop ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-                Start Codex
-              </button>
-              <button className="secondary" disabled={!isTauri || busy || !canStop} onClick={stopCodex} type="button">
-                {busy && canStop ? <Loader2 className="spin" size={18} /> : <Square size={16} />}
-                Stop
-              </button>
-            </div>
-          </div>
-
-          <div className="healthCard">
-            <div className="metricHeader">
-              <Activity size={18} />
-              Engine health
-            </div>
-            <p className={error ? "errorText" : ""}>{healthText}</p>
-            <dl>
-              <div>
-                <dt>Transport</dt>
-                <dd>{status.wsUrl ? "WebSocket" : "Not connected"}</dd>
-              </div>
-              <div>
-                <dt>Ready</dt>
-                <dd>{status.readyzUrl ? "Endpoint captured" : "Waiting"}</dd>
-              </div>
-              <div>
-                <dt>Health</dt>
-                <dd>{status.healthzUrl ? "Process watched" : "Idle"}</dd>
-              </div>
-            </dl>
-          </div>
-        </section>
-
-        <section className="grid">
-          <article>
-            <ShieldCheck size={20} />
-            <h3>Release-first foundation</h3>
-            <p>DMG packaging, pinned Codex sidecar preparation, and clean public repo structure.</p>
-          </article>
-          <article>
-            <CheckCircle2 size={20} />
-            <h3>Thin engine boundary</h3>
-            <p>Codex runs unmodified behind a small supervisor so upstream updates stay manageable.</p>
-          </article>
-          <article>
-            <Command size={20} />
-            <h3>Ready for the pro UI</h3>
-            <p>Sessions, command palette, snippets, and approvals can build on the same bridge.</p>
-          </article>
-        </section>
+        ) : (
+          messages.map((message) => (
+            <article className={`message ${message.role}`} key={message.id}>
+              <p>{message.text || (message.pending ? "Thinking..." : "")}</p>
+            </article>
+          ))
+        )}
+        <div ref={messagesEndRef} />
       </section>
+
+      <form className="composer" onSubmit={submitMessage}>
+        <input
+          autoComplete="off"
+          autoFocus
+          disabled={!ready || turnRunning}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={ready ? "Ask Codex anything." : status}
+          value={draft}
+        />
+        <button disabled={!canSend} type="submit">
+          Send
+        </button>
+      </form>
+      <p className="statusLine">{status}</p>
     </main>
   );
+}
+
+async function ensureCodexRunning(): Promise<CodexStatus & { wsUrl: string }> {
+  let status = await invoke<CodexStatus>("codex_status");
+  let startError: unknown = null;
+
+  if (status.phase === "stopped") {
+    try {
+      status = await invoke<CodexStatus>("start_codex");
+    } catch (error) {
+      startError = error;
+      status = await invoke<CodexStatus>("codex_status");
+    }
+  }
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    if (status.phase === "running" && status.wsUrl) {
+      return status as CodexStatus & { wsUrl: string };
+    }
+
+    await delay(500);
+    status = await invoke<CodexStatus>("codex_status");
+  }
+
+  if (startError) throw startError;
+  throw new Error(status.message ?? "Codex did not expose a WebSocket endpoint.");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function formatError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (!error || typeof error !== "object") return "Unknown error.";
+
+  const value = error as { message?: unknown; data?: unknown; error?: unknown };
+  if (typeof value.message === "string") return value.message;
+  if (value.error) return formatError(value.error);
+
+  try {
+    return JSON.stringify(value.data ?? value);
+  } catch {
+    return "Unknown error.";
+  }
 }
 
 export default App;
