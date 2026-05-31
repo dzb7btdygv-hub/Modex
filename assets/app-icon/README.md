@@ -6,6 +6,6 @@
 
 `modex-icon-mark-black-1024.png` and `modex-icon-mark-white-1024.png` are single-color transparent variants for high-contrast contexts.
 
-`modex-icon-app-1024.png` and `macos/modex.icns` are generated app icon assets. The packaged app icon uses the white mark on a dark backplate so the M remains legible in Finder, Dock, and installer views.
+`modex-icon-app-1024.png` and `macos/modex.icns` are generated app icon assets. The packaged app icon keeps the full-color transparent mark and adds a subtle dual halo so the light and dark parts remain legible across Finder, Dock, and installer views.
 
 For macOS 26-style icons, keep the artwork transparent and verify the final app icon through Apple's Icon Composer or Xcode asset flow before release. Do not bake OpenAI or Codex marks into the app icon.
