@@ -12,3 +12,18 @@
 </p>
 
 > Modex is not affiliated with OpenAI.
+
+## Development
+
+```bash
+npm install
+npm run tauri:dev
+```
+
+## Release Build
+
+```bash
+npm run tauri:build
+```
+
+The macOS app and DMG are written to `src-tauri/target/release/bundle/`.
