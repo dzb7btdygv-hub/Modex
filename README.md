@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/modex-wordmark.png" alt="Modex" width="640" />
+  <img src="assets/brand/modex-readme-header.png" alt="Modex" width="960" />
 </p>
 
 <p align="center">
