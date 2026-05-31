@@ -165,22 +165,14 @@ function App() {
 
         if (cancelled) return;
 
-        const thread = await rpc.request<ThreadStartResponse>("thread/start", {
-          approvalPolicy: "never",
-          sandbox: "read-only",
-          ephemeral: true,
-        });
-
-        if (cancelled) return;
-
-        threadIdRef.current = thread.thread.id;
         setReady(true);
         setStatus("Ready.");
       } catch (error) {
         if (cancelled) return;
+        const message = formatError(error);
         setReady(false);
-        setStatus("Codex is not ready.");
-        addSystemMessage(formatError(error));
+        setStatus(message);
+        addSystemMessage(message);
       }
     }
 
@@ -198,19 +190,20 @@ function App() {
 
     const text = draft.trim();
     const rpc = rpcRef.current;
-    const threadId = threadIdRef.current;
 
-    if (!text || !rpc || !threadId || turnRunning) return;
+    if (!text || !rpc || turnRunning) return;
 
     setDraft("");
     setTurnRunning(true);
-    setStatus("Thinking.");
+    setStatus(threadIdRef.current ? "Thinking." : "Starting chat.");
     setMessages((current) => [
       ...current,
       { id: `user-${crypto.randomUUID()}`, role: "user", text },
     ]);
 
     try {
+      const threadId = await ensureThread(rpc, threadIdRef);
+      setStatus("Thinking.");
       await rpc.request("turn/start", {
         threadId,
         input: [{ type: "text", text, text_elements: [] }],
@@ -258,6 +251,22 @@ function App() {
       <p className="statusLine">{status}</p>
     </main>
   );
+}
+
+async function ensureThread(
+  rpc: CodexRpc,
+  threadIdRef: { current: string | null },
+): Promise<string> {
+  if (threadIdRef.current) return threadIdRef.current;
+
+  const thread = await rpc.request<ThreadStartResponse>("thread/start", {
+    approvalPolicy: "never",
+    sandbox: "read-only",
+    ephemeral: true,
+  });
+
+  threadIdRef.current = thread.thread.id;
+  return thread.thread.id;
 }
 
 async function ensureCodexRunning(): Promise<CodexStatus & { wsUrl: string }> {

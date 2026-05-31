@@ -259,12 +259,13 @@ async fn start_codex(
     let mut status = supervisor
         .status_for_generation(generation)
         .ok_or_else(|| SupervisorError::StartupCancelled.to_string())?;
+    let mut output_parser = CommandOutputParser::default();
     let deadline = Instant::now() + STARTUP_TIMEOUT;
 
     while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
             Ok(Some(event)) => {
-                let terminated = apply_command_event(&mut status, event);
+                let terminated = output_parser.apply_event(&mut status, event);
                 supervisor.set_status_for_generation(generation, status.clone());
                 if terminated {
                     supervisor.finish_generation(generation);
@@ -303,7 +304,7 @@ async fn start_codex(
                 break;
             };
 
-            if apply_command_event(&mut next, event) {
+            if output_parser.apply_event(&mut next, event) {
                 supervisor_handle.finish_generation(generation);
                 break;
             }
@@ -325,22 +326,60 @@ fn codex_status(supervisor: State<'_, CodexSupervisor>) -> CodexStatus {
     supervisor.status()
 }
 
-fn apply_command_event(status: &mut CodexStatus, event: CommandEvent) -> bool {
-    match event {
-        CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-            if let Ok(text) = String::from_utf8(bytes) {
-                for line in text.lines() {
-                    parse_codex_line(status, line.trim());
-                }
+#[derive(Default)]
+struct CommandOutputParser {
+    stdout: String,
+    stderr: String,
+}
+
+impl CommandOutputParser {
+    fn apply_event(&mut self, status: &mut CodexStatus, event: CommandEvent) -> bool {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                parse_output_bytes(status, &mut self.stdout, &bytes);
+                false
             }
-            false
+            CommandEvent::Stderr(bytes) => {
+                parse_output_bytes(status, &mut self.stderr, &bytes);
+                false
+            }
+            CommandEvent::Terminated(payload) => {
+                status.phase = CodexPhase::Stopped;
+                status.message = Some(format!("Codex exited with status {:?}.", payload.code));
+                true
+            }
+            _ => false,
         }
-        CommandEvent::Terminated(payload) => {
-            status.phase = CodexPhase::Stopped;
-            status.message = Some(format!("Codex exited with status {:?}.", payload.code));
-            true
+    }
+}
+
+fn parse_output_bytes(status: &mut CodexStatus, pending: &mut String, bytes: &[u8]) {
+    pending.push_str(&String::from_utf8_lossy(bytes));
+
+    while let Some(newline) = pending.find('\n') {
+        let line: String = pending.drain(..=newline).collect();
+        parse_codex_line(status, line.trim());
+    }
+
+    parse_pending_endpoint(status, pending.trim());
+}
+
+fn parse_pending_endpoint(status: &mut CodexStatus, line: &str) {
+    if let Some(url) = line.strip_prefix("listening on: ") {
+        let url = url.trim();
+        if is_loopback_endpoint(url, &["ws"]) {
+            status.ws_url = Some(url.to_string());
         }
-        _ => false,
+    } else if let Some(url) = line.strip_prefix("readyz: ") {
+        let url = url.trim();
+        if is_loopback_endpoint(url, &["http"]) {
+            status.readyz_url = Some(url.to_string());
+        }
+    } else if let Some(url) = line.strip_prefix("healthz: ") {
+        let url = url.trim();
+        if is_loopback_endpoint(url, &["http"]) {
+            status.healthz_url = Some(url.to_string());
+        }
     }
 }
 
@@ -442,6 +481,31 @@ mod tests {
         parse_codex_line(&mut status, "listening on: ws://127.0.0.1:65036");
         parse_codex_line(&mut status, "readyz: http://127.0.0.1:65036/readyz");
         parse_codex_line(&mut status, "healthz: http://127.0.0.1:65036/healthz");
+
+        assert_eq!(status.ws_url.as_deref(), Some("ws://127.0.0.1:65036"));
+        assert_eq!(
+            status.readyz_url.as_deref(),
+            Some("http://127.0.0.1:65036/readyz")
+        );
+        assert_eq!(
+            status.healthz_url.as_deref(),
+            Some("http://127.0.0.1:65036/healthz")
+        );
+    }
+
+    #[test]
+    fn parses_split_codex_app_server_endpoint_lines() {
+        let mut status = CodexStatus::stopped();
+        let mut parser = CommandOutputParser::default();
+
+        for chunk in [
+            "listening on: ws://127.0.",
+            "0.1:65036\nreadyz: http://127.",
+            "0.0.1:65036/readyz\nhealthz: http://",
+            "127.0.0.1:65036/healthz\n",
+        ] {
+            parser.apply_event(&mut status, CommandEvent::Stdout(chunk.as_bytes().to_vec()));
+        }
 
         assert_eq!(status.ws_url.as_deref(), Some("ws://127.0.0.1:65036"));
         assert_eq!(
