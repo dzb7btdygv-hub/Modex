@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -17,6 +18,8 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
 enum SupervisorError {
     #[error("Codex is already running")]
     AlreadyRunning,
+    #[error("Codex startup was cancelled")]
+    StartupCancelled,
     #[error("Codex did not report an app-server endpoint within {0:?}")]
     StartupTimeout(Duration),
     #[error("{0}")]
@@ -33,7 +36,7 @@ struct CodexStatus {
     message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum CodexPhase {
     Stopped,
@@ -56,44 +59,171 @@ impl CodexStatus {
 
 #[derive(Default)]
 struct CodexSupervisor {
-    runtime: Mutex<Option<CodexRuntime>>,
+    state: Mutex<CodexSupervisorState>,
 }
 
-struct CodexRuntime {
-    child: CommandChild,
-    status: CodexStatus,
+#[derive(Default)]
+struct CodexSupervisorState {
+    next_generation: u64,
+    runtime: CodexRuntime,
+}
+
+#[derive(Default)]
+enum CodexRuntime {
+    #[default]
+    Stopped,
+    Starting {
+        generation: u64,
+        child: Option<CommandChild>,
+        status: CodexStatus,
+    },
+    Running {
+        generation: u64,
+        child: CommandChild,
+        status: CodexStatus,
+    },
 }
 
 impl CodexSupervisor {
     fn status(&self) -> CodexStatus {
-        let guard = self.runtime.lock().expect("supervisor lock poisoned");
-        guard
-            .as_ref()
-            .map(|runtime| runtime.status.clone())
-            .unwrap_or_else(CodexStatus::stopped)
+        let guard = self.state.lock().expect("supervisor lock poisoned");
+        match &guard.runtime {
+            CodexRuntime::Stopped => CodexStatus::stopped(),
+            CodexRuntime::Starting { status, .. } | CodexRuntime::Running { status, .. } => {
+                status.clone()
+            }
+        }
     }
 
-    fn set_status(&self, status: CodexStatus) {
-        if let Some(runtime) = self
-            .runtime
-            .lock()
-            .expect("supervisor lock poisoned")
-            .as_mut()
-        {
-            runtime.status = status;
+    fn reserve_starting(&self) -> Result<u64, SupervisorError> {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        if !matches!(guard.runtime, CodexRuntime::Stopped) {
+            return Err(SupervisorError::AlreadyRunning);
+        }
+
+        guard.next_generation = guard.next_generation.wrapping_add(1);
+        let generation = guard.next_generation;
+        guard.runtime = CodexRuntime::Starting {
+            generation,
+            child: None,
+            status: CodexStatus {
+                phase: CodexPhase::Starting,
+                ws_url: None,
+                readyz_url: None,
+                healthz_url: None,
+                message: Some("Waiting for Codex app-server to report endpoints.".to_string()),
+            },
+        };
+
+        Ok(generation)
+    }
+
+    fn attach_child(&self, generation: u64, child: CommandChild) -> Result<(), CommandChild> {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        match &mut guard.runtime {
+            CodexRuntime::Starting {
+                generation: current,
+                child: slot,
+                ..
+            } if *current == generation && slot.is_none() => {
+                *slot = Some(child);
+                Ok(())
+            }
+            _ => Err(child),
+        }
+    }
+
+    fn promote_running(&self, generation: u64, status: CodexStatus) -> bool {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        let runtime = mem::replace(&mut guard.runtime, CodexRuntime::Stopped);
+
+        match runtime {
+            CodexRuntime::Starting {
+                generation: current,
+                child: Some(child),
+                ..
+            } if current == generation => {
+                guard.runtime = CodexRuntime::Running {
+                    generation,
+                    child,
+                    status,
+                };
+                true
+            }
+            runtime => {
+                guard.runtime = runtime;
+                false
+            }
         }
     }
 
     fn stop(&self) -> CodexStatus {
-        if let Some(runtime) = self
-            .runtime
-            .lock()
-            .expect("supervisor lock poisoned")
-            .take()
-        {
-            let _ = runtime.child.kill();
-        }
+        self.stop_active();
         CodexStatus::stopped()
+    }
+
+    fn stop_active(&self) {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        let runtime = mem::replace(&mut guard.runtime, CodexRuntime::Stopped);
+        kill_runtime(runtime);
+    }
+
+    fn stop_generation(&self, generation: u64) -> bool {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        if !runtime_matches(&guard.runtime, generation) {
+            return false;
+        }
+
+        let runtime = mem::replace(&mut guard.runtime, CodexRuntime::Stopped);
+        kill_runtime(runtime);
+        true
+    }
+
+    fn status_for_generation(&self, generation: u64) -> Option<CodexStatus> {
+        let guard = self.state.lock().expect("supervisor lock poisoned");
+        match &guard.runtime {
+            CodexRuntime::Starting {
+                generation: current,
+                status,
+                ..
+            }
+            | CodexRuntime::Running {
+                generation: current,
+                status,
+                ..
+            } if *current == generation => Some(status.clone()),
+            _ => None,
+        }
+    }
+
+    fn set_status_for_generation(&self, generation: u64, status: CodexStatus) -> bool {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        match &mut guard.runtime {
+            CodexRuntime::Starting {
+                generation: current,
+                status: current_status,
+                ..
+            }
+            | CodexRuntime::Running {
+                generation: current,
+                status: current_status,
+                ..
+            } if *current == generation => {
+                *current_status = status;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn finish_generation(&self, generation: u64) -> bool {
+        let mut guard = self.state.lock().expect("supervisor lock poisoned");
+        if runtime_matches(&guard.runtime, generation) {
+            guard.runtime = CodexRuntime::Stopped;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -102,9 +232,9 @@ async fn start_codex(
     app: tauri::AppHandle,
     supervisor: State<'_, CodexSupervisor>,
 ) -> Result<CodexStatus, String> {
-    if !matches!(supervisor.status().phase, CodexPhase::Stopped) {
-        return Err(SupervisorError::AlreadyRunning.to_string());
-    }
+    let generation = supervisor
+        .reserve_starting()
+        .map_err(|err| err.to_string())?;
 
     let command = app
         .shell()
@@ -112,25 +242,35 @@ async fn start_codex(
         .map_err(|err| SupervisorError::Shell(err.to_string()).to_string())?
         .args(["app-server", "--listen", "ws://127.0.0.1:0"]);
 
-    let (mut rx, child) = command
-        .spawn()
-        .map_err(|err| SupervisorError::Shell(err.to_string()).to_string())?;
+    let (mut rx, child) = command.spawn().map_err(|err| {
+        supervisor.stop_generation(generation);
+        SupervisorError::Shell(err.to_string()).to_string()
+    })?;
 
-    let mut status = CodexStatus {
-        phase: CodexPhase::Starting,
-        ws_url: None,
-        readyz_url: None,
-        healthz_url: None,
-        message: Some("Waiting for Codex app-server to report endpoints.".to_string()),
-    };
+    if let Err(child) = supervisor.attach_child(generation, child) {
+        let _ = child.kill();
+        return Err(SupervisorError::StartupCancelled.to_string());
+    }
+
+    let mut status = supervisor
+        .status_for_generation(generation)
+        .ok_or_else(|| SupervisorError::StartupCancelled.to_string())?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
 
     while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
-            Ok(Some(event)) => apply_command_event(&mut status, event),
+            Ok(Some(event)) => {
+                let terminated = apply_command_event(&mut status, event);
+                supervisor.set_status_for_generation(generation, status.clone());
+                if terminated {
+                    supervisor.finish_generation(generation);
+                    break;
+                }
+            }
             Ok(None) => {
                 status.phase = CodexPhase::Unhealthy;
                 status.message = Some("Codex app-server exited during startup.".to_string());
+                supervisor.stop_generation(generation);
                 break;
             }
             Err(_) => {}
@@ -144,28 +284,29 @@ async fn start_codex(
     }
 
     if !matches!(status.phase, CodexPhase::Running) {
+        supervisor.stop_generation(generation);
         return Err(SupervisorError::StartupTimeout(STARTUP_TIMEOUT).to_string());
     }
 
-    *supervisor.runtime.lock().expect("supervisor lock poisoned") = Some(CodexRuntime {
-        child,
-        status: status.clone(),
-    });
+    if !supervisor.promote_running(generation, status.clone()) {
+        return Err(SupervisorError::StartupCancelled.to_string());
+    }
 
     let app_for_events = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             let supervisor_handle = app_for_events.state::<CodexSupervisor>();
-            let mut next = supervisor_handle.status();
-            apply_command_event(&mut next, event);
-            supervisor_handle.set_status(next);
-        }
+            let Some(mut next) = supervisor_handle.status_for_generation(generation) else {
+                break;
+            };
 
-        let supervisor_handle = app_for_events.state::<CodexSupervisor>();
-        let mut next = supervisor_handle.status();
-        next.phase = CodexPhase::Stopped;
-        next.message = Some("Codex app-server stopped.".to_string());
-        supervisor_handle.set_status(next);
+            if apply_command_event(&mut next, event) {
+                supervisor_handle.finish_generation(generation);
+                break;
+            }
+
+            supervisor_handle.set_status_for_generation(generation, next);
+        }
     });
 
     Ok(status)
@@ -181,7 +322,7 @@ fn codex_status(supervisor: State<'_, CodexSupervisor>) -> CodexStatus {
     supervisor.status()
 }
 
-fn apply_command_event(status: &mut CodexStatus, event: CommandEvent) {
+fn apply_command_event(status: &mut CodexStatus, event: CommandEvent) -> bool {
     match event {
         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
             if let Ok(text) = String::from_utf8(bytes) {
@@ -189,12 +330,14 @@ fn apply_command_event(status: &mut CodexStatus, event: CommandEvent) {
                     parse_codex_line(status, line.trim());
                 }
             }
+            false
         }
         CommandEvent::Terminated(payload) => {
             status.phase = CodexPhase::Stopped;
             status.message = Some(format!("Codex exited with status {:?}.", payload.code));
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -207,6 +350,32 @@ fn parse_codex_line(status: &mut CodexStatus, line: &str) {
         status.healthz_url = Some(url.trim().to_string());
     } else if !line.is_empty() {
         status.message = Some(line.to_string());
+    }
+}
+
+fn runtime_matches(runtime: &CodexRuntime, generation: u64) -> bool {
+    match runtime {
+        CodexRuntime::Starting {
+            generation: current,
+            ..
+        }
+        | CodexRuntime::Running {
+            generation: current,
+            ..
+        } => *current == generation,
+        CodexRuntime::Stopped => false,
+    }
+}
+
+fn kill_runtime(runtime: CodexRuntime) {
+    match runtime {
+        CodexRuntime::Starting {
+            child: Some(child), ..
+        }
+        | CodexRuntime::Running { child, .. } => {
+            let _ = child.kill();
+        }
+        _ => {}
     }
 }
 
@@ -226,4 +395,64 @@ pub fn run() {
                 app.state::<CodexSupervisor>().stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_codex_app_server_endpoints() {
+        let mut status = CodexStatus::stopped();
+
+        parse_codex_line(&mut status, "listening on: ws://127.0.0.1:65036");
+        parse_codex_line(&mut status, "readyz: http://127.0.0.1:65036/readyz");
+        parse_codex_line(&mut status, "healthz: http://127.0.0.1:65036/healthz");
+
+        assert_eq!(status.ws_url.as_deref(), Some("ws://127.0.0.1:65036"));
+        assert_eq!(
+            status.readyz_url.as_deref(),
+            Some("http://127.0.0.1:65036/readyz")
+        );
+        assert_eq!(
+            status.healthz_url.as_deref(),
+            Some("http://127.0.0.1:65036/healthz")
+        );
+    }
+
+    #[test]
+    fn reserve_starting_blocks_concurrent_starts() {
+        let supervisor = CodexSupervisor::default();
+
+        let generation = supervisor.reserve_starting().unwrap();
+        assert_eq!(generation, 1);
+        assert!(matches!(
+            supervisor.reserve_starting(),
+            Err(SupervisorError::AlreadyRunning)
+        ));
+        assert_eq!(supervisor.status().phase, CodexPhase::Starting);
+    }
+
+    #[test]
+    fn stale_generation_cannot_update_new_runtime() {
+        let supervisor = CodexSupervisor::default();
+        let first = supervisor.reserve_starting().unwrap();
+        assert!(supervisor.stop_generation(first));
+        let second = supervisor.reserve_starting().unwrap();
+
+        let stale = CodexStatus {
+            phase: CodexPhase::Stopped,
+            ws_url: Some("ws://127.0.0.1:1".to_string()),
+            readyz_url: None,
+            healthz_url: None,
+            message: Some("stale".to_string()),
+        };
+
+        assert!(!supervisor.set_status_for_generation(first, stale));
+        assert_eq!(supervisor.status().phase, CodexPhase::Starting);
+        assert_eq!(
+            supervisor.status_for_generation(second).unwrap().ws_url,
+            None
+        );
+    }
 }
