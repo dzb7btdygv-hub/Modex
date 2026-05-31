@@ -16,7 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import brand from "../assets/brand/modex-wordmark.png";
 
-type CodexPhase = "stopped" | "starting" | "running" | "unhealthy";
+type CodexPhase = "stopped" | "starting" | "running";
 
 type CodexStatus = {
   phase: CodexPhase;
@@ -38,7 +38,6 @@ const statusLabel: Record<CodexPhase, string> = {
   stopped: "Stopped",
   starting: "Starting",
   running: "Running",
-  unhealthy: "Needs attention",
 };
 
 function App() {
@@ -47,7 +46,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canStop = status.phase === "running" || status.phase === "unhealthy";
+  const canStop = status.phase === "running";
   const isRunning = status.phase === "running";
 
   async function refreshStatus() {
@@ -150,7 +149,7 @@ function App() {
             </div>
             <h2>Start the local Codex app-server.</h2>
             <p>
-              Modex launches Codex as a managed sidecar, watches its health,
+              Modex launches Codex as a managed sidecar, tracks its process,
               and keeps the UI ready for sessions, approvals, diffs, and
               project tools.
             </p>
@@ -180,11 +179,11 @@ function App() {
               </div>
               <div>
                 <dt>Ready</dt>
-                <dd>{status.readyzUrl ? "Available" : "Waiting"}</dd>
+                <dd>{status.readyzUrl ? "Endpoint captured" : "Waiting"}</dd>
               </div>
               <div>
                 <dt>Health</dt>
-                <dd>{status.healthzUrl ? "Monitored" : "Idle"}</dd>
+                <dd>{status.healthzUrl ? "Process watched" : "Idle"}</dd>
               </div>
             </dl>
           </div>

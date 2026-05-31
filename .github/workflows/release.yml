@@ -5,21 +5,38 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   macos:
     runs-on: macos-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      # actions/checkout v5.0.1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      # actions/setup-node v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 24
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install stable --profile minimal
       - run: npm ci
-      - run: npm run tauri:build
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            src-tauri/target/release/bundle/dmg/*.dmg
+      - name: Build DMG
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri:build
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            src-tauri/target/release/bundle/dmg/*.dmg \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

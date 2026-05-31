@@ -11,7 +11,9 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 use thiserror::Error;
+use url::Url;
 
+const MAX_STATUS_MESSAGE_CHARS: usize = 4096;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Error)]
@@ -20,6 +22,8 @@ enum SupervisorError {
     AlreadyRunning,
     #[error("Codex startup was cancelled")]
     StartupCancelled,
+    #[error("Codex app-server exited during startup")]
+    StartupExited,
     #[error("Codex did not report an app-server endpoint within {0:?}")]
     StartupTimeout(Duration),
     #[error("{0}")]
@@ -42,7 +46,6 @@ enum CodexPhase {
     Stopped,
     Starting,
     Running,
-    Unhealthy,
 }
 
 impl CodexStatus {
@@ -68,6 +71,7 @@ struct CodexSupervisorState {
     runtime: CodexRuntime,
 }
 
+// Generation IDs prevent late sidecar events from mutating a restarted runtime.
 #[derive(Default)]
 enum CodexRuntime {
     #[default]
@@ -264,14 +268,13 @@ async fn start_codex(
                 supervisor.set_status_for_generation(generation, status.clone());
                 if terminated {
                     supervisor.finish_generation(generation);
-                    break;
+                    return Err(SupervisorError::StartupExited.to_string());
                 }
             }
             Ok(None) => {
-                status.phase = CodexPhase::Unhealthy;
                 status.message = Some("Codex app-server exited during startup.".to_string());
                 supervisor.stop_generation(generation);
-                break;
+                return Err(SupervisorError::StartupExited.to_string());
             }
             Err(_) => {}
         }
@@ -343,14 +346,45 @@ fn apply_command_event(status: &mut CodexStatus, event: CommandEvent) -> bool {
 
 fn parse_codex_line(status: &mut CodexStatus, line: &str) {
     if let Some(url) = line.strip_prefix("listening on: ") {
-        status.ws_url = Some(url.trim().to_string());
+        if let Some(url) = loopback_endpoint(status, url.trim(), &["ws"]) {
+            status.ws_url = Some(url);
+        }
     } else if let Some(url) = line.strip_prefix("readyz: ") {
-        status.readyz_url = Some(url.trim().to_string());
+        if let Some(url) = loopback_endpoint(status, url.trim(), &["http"]) {
+            status.readyz_url = Some(url);
+        }
     } else if let Some(url) = line.strip_prefix("healthz: ") {
-        status.healthz_url = Some(url.trim().to_string());
+        if let Some(url) = loopback_endpoint(status, url.trim(), &["http"]) {
+            status.healthz_url = Some(url);
+        }
     } else if !line.is_empty() {
-        status.message = Some(line.to_string());
+        set_status_message(status, line);
     }
+}
+
+fn loopback_endpoint(status: &mut CodexStatus, raw_url: &str, schemes: &[&str]) -> Option<String> {
+    if is_loopback_endpoint(raw_url, schemes) {
+        Some(raw_url.to_string())
+    } else {
+        set_status_message(status, "Ignored non-loopback Codex app-server endpoint.");
+        None
+    }
+}
+
+fn is_loopback_endpoint(raw_url: &str, schemes: &[&str]) -> bool {
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+
+    if !schemes.contains(&url.scheme()) || url.port().is_none() {
+        return false;
+    }
+
+    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+}
+
+fn set_status_message(status: &mut CodexStatus, message: &str) {
+    status.message = Some(message.chars().take(MAX_STATUS_MESSAGE_CHARS).collect());
 }
 
 fn runtime_matches(runtime: &CodexRuntime, generation: u64) -> bool {
@@ -417,6 +451,34 @@ mod tests {
         assert_eq!(
             status.healthz_url.as_deref(),
             Some("http://127.0.0.1:65036/healthz")
+        );
+    }
+
+    #[test]
+    fn rejects_non_loopback_endpoints() {
+        let mut status = CodexStatus::stopped();
+
+        parse_codex_line(&mut status, "listening on: ws://example.com:65036");
+        parse_codex_line(&mut status, "readyz: http://192.168.1.2:65036/readyz");
+
+        assert_eq!(status.ws_url, None);
+        assert_eq!(status.readyz_url, None);
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Ignored non-loopback Codex app-server endpoint.")
+        );
+    }
+
+    #[test]
+    fn truncates_status_messages() {
+        let mut status = CodexStatus::stopped();
+        let message = "x".repeat(MAX_STATUS_MESSAGE_CHARS + 10);
+
+        parse_codex_line(&mut status, &message);
+
+        assert_eq!(
+            status.message.unwrap().chars().count(),
+            MAX_STATUS_MESSAGE_CHARS
         );
     }
 
