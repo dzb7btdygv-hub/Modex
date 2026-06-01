@@ -87,7 +87,13 @@ final class UpdateStore {
             let remote = try await runGit(["rev-parse", upstream], in: repo)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            isUpdateAvailable = (installedSourceCommit() ?? local) != remote
+            if let installed = installedSourceCommit() {
+                isUpdateAvailable = installed != remote
+            } else if isRunningInstalledBundle(outside: repo) {
+                isUpdateAvailable = true
+            } else {
+                isUpdateAvailable = local != remote
+            }
             message = nil
         } catch {
             isUpdateAvailable = false
@@ -182,6 +188,12 @@ final class UpdateStore {
         }
         let commit = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return commit.isEmpty ? nil : commit
+    }
+
+    private func isRunningInstalledBundle(outside repo: URL) -> Bool {
+        let bundle = Bundle.main.bundleURL.standardizedFileURL
+        let repo = repo.standardizedFileURL
+        return bundle.pathExtension == "app" && !bundle.path.hasPrefix(repo.path + "/")
     }
 
     private func runProcess(_ executable: String, arguments: [String], in directory: URL) async throws -> String {
