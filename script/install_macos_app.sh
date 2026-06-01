@@ -24,7 +24,7 @@ REPO_ROOT="${MODEX_REPO_PATH:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DERIVED_DATA="$REPO_ROOT/macos/build/DerivedData"
 PROJECT="$REPO_ROOT/macos/Modex.xcodeproj"
 APP_SOURCE="$DERIVED_DATA/Build/Products/Debug/Modex.app"
-INSTALL_DIR="${MODEX_INSTALL_DIR:-$HOME/Applications}"
+INSTALL_DIR="${MODEX_INSTALL_DIR:-/Applications}"
 
 cd "$REPO_ROOT"
 
@@ -55,6 +55,11 @@ sleep 0.5
 rm -rf "$APP_DEST"
 ditto "$APP_SOURCE" "$APP_DEST"
 xattr -dr com.apple.quarantine "$APP_DEST" >/dev/null 2>&1 || true
+
+# Re-assert this copy as the canonical "Modex" so Spotlight / Finder / `open -a`
+# don't launch a stale build-directory copy that shares the same bundle id.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+[[ -x "$LSREGISTER" ]] && "$LSREGISTER" -f "$APP_DEST" >/dev/null 2>&1 || true
 
 [[ "$RELAUNCH" == "true" ]] && open "$APP_DEST"
 
