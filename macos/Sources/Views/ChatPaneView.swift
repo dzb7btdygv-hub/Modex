@@ -2,17 +2,28 @@ import SwiftUI
 
 struct ChatPaneView: View {
     @Environment(ChatStore.self) private var store
-    @Binding var search: String
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .searchable(
-                text: $search,
-                placement: .toolbar,
-                prompt: "Search chats"
-            )
+            .toolbar {
+                ToolbarItemGroup(placement: .principal) {
+                    SelectorPill(
+                        systemImage: "cpu",
+                        title: store.selectedModel,
+                        options: store.availableModels,
+                        selected: store.selectedModel
+                    ) { store.selectedModel = $0 }
+
+                    SelectorPill(
+                        systemImage: "brain",
+                        title: store.reasoning.label,
+                        options: ReasoningEffort.allCases.map(\.label),
+                        selected: store.reasoning.label
+                    ) { if let level = ReasoningEffort(label: $0) { store.reasoning = level } }
+                }
+            }
     }
 
     @ViewBuilder
@@ -46,13 +57,11 @@ struct ChatPaneView: View {
     // MARK: - Composer
 
     private var composer: some View {
-        VStack(spacing: 10) {
-            PromptDockView()
-        }
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 18)
-        .padding(.top, 8)
+        PromptDockView()
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 18)
+            .padding(.top, 8)
     }
 }

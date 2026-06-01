@@ -12,6 +12,15 @@ final class ChatStore {
     private(set) var isReady = false
     private(set) var turnRunning = false
 
+    // MARK: - User selections (top-bar model + reasoning, composer context)
+    // UI state for now: the Codex engine keeps using its configured defaults
+    // until the app-server's model/effort schema is confirmed and wired in.
+    var selectedModel = "GPT-5.5"
+    let availableModels = ["GPT-5.5", "GPT-5.5 Codex", "GPT-5 mini"]
+    var reasoning: ReasoningEffort = .high
+    var contextMode = "Smart Context"
+    let contextModes = ["Smart Context", "Current File", "Whole Project"]
+
     let supervisor = CodexSupervisor()
     private var rpc: CodexRPCClient?
     private var threadId: String?

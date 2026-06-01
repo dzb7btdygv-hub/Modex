@@ -118,7 +118,7 @@ private struct UpdateButton: View {
                         .fixedSize()
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
-                Image(systemName: updates.isUpdating ? "arrow.triangle.2.circlepath" : "arrow.down.circle.fill")
+                Image(systemName: updates.isUpdating ? "arrow.triangle.2.circlepath" : "arrow.down")
                     .font(.callout.weight(.bold))
             }
             .foregroundStyle(pink)

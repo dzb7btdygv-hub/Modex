@@ -26,3 +26,24 @@ enum SidebarItem: Hashable {
     case destination(String)
     case recent(UUID)
 }
+
+/// Reasoning effort exposed by the top-bar selector (Low → xHigh).
+enum ReasoningEffort: String, CaseIterable, Identifiable {
+    case low, medium, high, xhigh
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .xhigh: return "xHigh"
+        }
+    }
+
+    init?(label: String) {
+        guard let match = Self.allCases.first(where: { $0.label == label }) else { return nil }
+        self = match
+    }
+}
