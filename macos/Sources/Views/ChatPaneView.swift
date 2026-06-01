@@ -8,11 +8,10 @@ struct ChatPaneView: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .toolbar { toolbarContent }
             .searchable(
                 text: $search,
                 placement: .toolbar,
-                prompt: "Search chats, agents, and settings"
+                prompt: "Search chats"
             )
     }
 
@@ -62,41 +61,5 @@ struct ChatPaneView: View {
         .padding(.horizontal, 24)
         .padding(.bottom, 18)
         .padding(.top, 8)
-    }
-
-    // MARK: - Toolbar
-
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Menu {
-                Button("Rename…") {}
-                Button("Duplicate") {}
-                Divider()
-                Button("Delete", role: .destructive) {}
-            } label: {
-                Text("New Chat").fontWeight(.semibold)
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.visible)
-        }
-
-        ToolbarItem(placement: .status) {
-            Label("Auto-saved", systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-                .labelStyle(.titleAndIcon)
-        }
-
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button("Export Transcript…") {}
-                Button("Share…") {}
-                Divider()
-                Button("Settings…") {}
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-        }
     }
 }

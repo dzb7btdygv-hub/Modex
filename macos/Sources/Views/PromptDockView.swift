@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The prompt composer — the one genuinely custom interactive surface the brief
-/// permits. A single `regular` glass field holding standard system controls,
-/// grouped in a `GlassEffectContainer` so they blend as one element.
+/// The prompt composer — the one custom interactive surface the brief permits.
+/// A single rounded glass field: the input on top, a tidy control row beneath
+/// (＋ · Smart Context … model · send), grouped in a `GlassEffectContainer`.
 struct PromptDockView: View {
     @Environment(ChatStore.self) private var store
     @State private var draft = ""
@@ -10,22 +10,27 @@ struct PromptDockView: View {
 
     var body: some View {
         GlassEffectContainer(spacing: 10) {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 TextField("Ask Modex to build anything…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.body)
-                    .lineLimit(1...6)
+                    .font(.system(size: 15))
+                    .lineLimit(1...7)
                     .focused($focused)
                     .disabled(!store.isReady)
                     .onSubmit(submit)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
 
                 HStack(spacing: 8) {
                     Button {
                         // Attach context.
                     } label: {
                         Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 30, height: 30)
                     }
                     .buttonStyle(.glass)
+                    .clipShape(Circle())
                     .help("Add context")
 
                     Menu {
@@ -54,17 +59,24 @@ struct PromptDockView: View {
 
                     Button(action: submit) {
                         Image(systemName: "arrow.up")
-                            .fontWeight(.semibold)
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(width: 30, height: 30)
                     }
                     .buttonStyle(.glassProminent)
+                    .clipShape(Circle())
                     .disabled(!canSend)
                     .keyboardShortcut(.return, modifiers: [])
                     .help("Send")
                 }
             }
-            .padding(16)
+            .padding(14)
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .rect(cornerRadius: 26))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(.white.opacity(0.14), lineWidth: 0.75)
+        )
+        .contentShape(.rect(cornerRadius: 26))
         .onTapGesture { focused = true }
     }
 

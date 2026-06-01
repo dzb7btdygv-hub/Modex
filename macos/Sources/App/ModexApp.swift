@@ -4,14 +4,22 @@ import AppKit
 @main
 struct ModexApp: App {
     @State private var store = ChatStore()
+    @State private var updates = UpdateStore()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(store)
+                .environment(updates)
                 .background(WindowConfigurator())
-                .onAppear { store.bootIfNeeded() }
-                .onDisappear { store.shutdown() }
+                .onAppear {
+                    store.bootIfNeeded()
+                    updates.start()
+                }
+                .onDisappear {
+                    store.shutdown()
+                    updates.stop()
+                }
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1240, height: 820)
