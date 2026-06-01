@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { CodexRpc } from "./codexRpc";
 
 type CodexPhase = "stopped" | "starting" | "running";
@@ -39,6 +39,7 @@ function App() {
   const rpcRef = useRef<CodexRpc | null>(null);
   const threadIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
 
   const addSystemMessage = useCallback((text: string) => {
     setMessages((current) => [
@@ -215,14 +216,33 @@ function App() {
     }
   }
 
+  function handleDraftInput(value: string) {
+    setDraft(value);
+
+    const input = draftRef.current;
+    if (!input) return;
+
+    input.style.height = "0px";
+    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  }
+
+  function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
   const canSend = ready && !turnRunning && draft.trim().length > 0;
 
   return (
     <main className="chatShell">
+      <header className="titleBar" data-tauri-drag-region>
+        <div className="windowControlSpace" data-tauri-drag-region />
+      </header>
+
       <section className="conversation" aria-live="polite">
         {messages.length === 0 ? (
           <div className="emptyState">
-            <h1>Modex</h1>
             <p>{status}</p>
           </div>
         ) : (
@@ -236,19 +256,21 @@ function App() {
       </section>
 
       <form className="composer" onSubmit={submitMessage}>
-        <input
+        <textarea
           autoComplete="off"
           autoFocus
           disabled={!ready || turnRunning}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={ready ? "Ask Codex anything." : status}
+          onChange={(event) => handleDraftInput(event.target.value)}
+          onKeyDown={handleDraftKeyDown}
+          placeholder={ready ? "Ask Modex anything." : status}
+          ref={draftRef}
+          rows={1}
           value={draft}
         />
-        <button disabled={!canSend} type="submit">
-          Send
+        <button aria-label="Send message" disabled={!canSend} type="submit">
+          ↑
         </button>
       </form>
-      <p className="statusLine">{status}</p>
     </main>
   );
 }
