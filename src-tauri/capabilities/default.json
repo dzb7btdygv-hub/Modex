@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "Default Modex desktop permissions",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "websocket:default"]
 }

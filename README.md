@@ -15,6 +15,12 @@
 
 ## Development
 
+Modex is a Tauri desktop app. The Rust backend starts a pinned Codex sidecar,
+then the UI talks to Codex through the app-server JSON-RPC protocol.
+
+Before running chat, make sure Codex auth is configured locally with `codex login`
+or an API key supported by Codex.
+
 ```bash
 npm install
 npm run tauri:dev

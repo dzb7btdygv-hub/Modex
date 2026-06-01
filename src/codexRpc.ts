@@ -1,3 +1,5 @@
+import WebSocket from "@tauri-apps/plugin-websocket";
+
 type JsonRpcId = number | string;
 
 export type JsonRpcError = {
@@ -20,6 +22,7 @@ type CloseHandler = (reason: string) => void;
 export class CodexRpc {
   private nextId = 1;
   private closedByClient = false;
+  private removeListener: (() => void) | null = null;
   private pending = new Map<
     JsonRpcId,
     {
@@ -34,60 +37,65 @@ export class CodexRpc {
     private readonly onClose: CloseHandler,
   ) {}
 
-  static connect(
+  static async connect(
     url: string,
     onNotification: NotificationHandler,
     onClose: CloseHandler,
   ): Promise<CodexRpc> {
-    return new Promise((resolve, reject) => {
-      const socket = new WebSocket(url);
-      let settled = false;
-
-      socket.addEventListener(
-        "open",
-        () => {
-          settled = true;
-          const client = new CodexRpc(socket, onNotification, onClose);
-          client.bind();
-          resolve(client);
-        },
-        { once: true },
-      );
-
-      socket.addEventListener(
-        "error",
-        () => {
-          if (!settled) reject(new Error("Could not connect to Codex."));
-        },
-        { once: true },
-      );
-    });
+    try {
+      const socket = await WebSocket.connect(url);
+      const client = new CodexRpc(socket, onNotification, onClose);
+      client.bind();
+      return client;
+    } catch {
+      throw new Error("Could not connect to Codex.");
+    }
   }
 
-  request<T>(method: string, params: unknown): Promise<T> {
+  async request<T>(method: string, params: unknown): Promise<T> {
     const id = this.nextId++;
-    this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
 
-    return new Promise((resolve, reject) => {
+    const response = new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject,
       });
     });
+
+    try {
+      await this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+    } catch (error) {
+      this.pending.delete(id);
+      throw error;
+    }
+
+    return response;
   }
 
-  close() {
+  async close() {
     this.closedByClient = true;
+    this.removeListener?.();
+    this.removeListener = null;
     this.rejectPending("Codex disconnected.");
-    this.socket.close();
+    try {
+      await this.socket.disconnect();
+    } catch {
+    }
   }
 
   private bind() {
-    this.socket.addEventListener("message", (event) => this.handleMessage(event));
-    this.socket.addEventListener("close", () => {
-      this.rejectPending("Codex disconnected.");
-      if (!this.closedByClient) this.onClose("Codex disconnected.");
+    this.removeListener = this.socket.addListener((message) => {
+      if (message.type === "Text") {
+        this.handleMessage(message.data);
+      } else if (message.type === "Close") {
+        this.handleClose();
+      }
     });
+  }
+
+  private handleClose() {
+    this.rejectPending("Codex disconnected.");
+    if (!this.closedByClient) this.onClose("Codex disconnected.");
   }
 
   private rejectPending(message: string) {
@@ -97,11 +105,11 @@ export class CodexRpc {
     this.pending.clear();
   }
 
-  private handleMessage(event: MessageEvent<string>) {
+  private handleMessage(data: string) {
     let message: JsonRpcMessage;
 
     try {
-      message = JSON.parse(event.data) as JsonRpcMessage;
+      message = JSON.parse(data) as JsonRpcMessage;
     } catch {
       return;
     }
@@ -132,7 +140,7 @@ export class CodexRpc {
     const result = defaultServerResponse(method);
 
     if (result === undefined) {
-      this.socket.send(
+      void this.sendResponse(
         JSON.stringify({
           jsonrpc: "2.0",
           id,
@@ -142,7 +150,15 @@ export class CodexRpc {
       return;
     }
 
-    this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+    void this.sendResponse(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  }
+
+  private async sendResponse(message: string) {
+    try {
+      await this.socket.send(message);
+    } catch {
+      this.handleClose();
+    }
   }
 }
 

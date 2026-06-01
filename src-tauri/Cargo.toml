@@ -19,6 +19,7 @@ tauri-build = { version = "2.6.2", features = [] }
 serde = { version = "1.0.228", features = ["derive"] }
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-shell = "2.3.5"
+tauri-plugin-websocket = "2.4.2"
 thiserror = "2.0.17"
 tokio = { version = "1.52.3", features = ["time"] }
 url = "2.5.8"

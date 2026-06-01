@@ -360,27 +360,6 @@ fn parse_output_bytes(status: &mut CodexStatus, pending: &mut String, bytes: &[u
         let line: String = pending.drain(..=newline).collect();
         parse_codex_line(status, line.trim());
     }
-
-    parse_pending_endpoint(status, pending.trim());
-}
-
-fn parse_pending_endpoint(status: &mut CodexStatus, line: &str) {
-    if let Some(url) = line.strip_prefix("listening on: ") {
-        let url = url.trim();
-        if is_loopback_endpoint(url, &["ws"]) {
-            status.ws_url = Some(url.to_string());
-        }
-    } else if let Some(url) = line.strip_prefix("readyz: ") {
-        let url = url.trim();
-        if is_loopback_endpoint(url, &["http"]) {
-            status.readyz_url = Some(url.to_string());
-        }
-    } else if let Some(url) = line.strip_prefix("healthz: ") {
-        let url = url.trim();
-        if is_loopback_endpoint(url, &["http"]) {
-            status.healthz_url = Some(url.to_string());
-        }
-    }
 }
 
 fn parse_codex_line(status: &mut CodexStatus, line: &str) {
@@ -455,6 +434,7 @@ fn kill_runtime(runtime: CodexRuntime) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_websocket::init())
         .manage(CodexSupervisor::default())
         .invoke_handler(tauri::generate_handler![
             start_codex,
