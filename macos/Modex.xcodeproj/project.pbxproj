@@ -1,0 +1,442 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F3B3D30FECFDD9633C32E8A /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5040D54FA55247AEF76881B5 /* ChatMessage.swift */; };
+		122044337BFE6AF9A96808EC /* ChatPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1218499DCD2B77E2360263 /* ChatPaneView.swift */; };
+		21008F654A69F73CFB813D43 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8240FA6B8FF631FC9AC2991B /* SidebarView.swift */; };
+		2C9EA784B1094C97EB738703 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92D52613EAE875F146B9EDBD /* ConversationView.swift */; };
+		2E0C2EE8D9C79CDE91019283 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5AC3BDA00E2A03C1333D03B3 /* Assets.xcassets */; };
+		61E5952E194335E02E913C67 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499FEE229016A6D9597E1EB /* RootView.swift */; };
+		82071CC624364C203F772097 /* PromptDockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A6767BFDFB94F518E795B5 /* PromptDockView.swift */; };
+		A4010A0D292D5FFC2DD9E849 /* ModexApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E463D1E0125298691BA3CD08 /* ModexApp.swift */; };
+		B5026B1E5AC014A46E475C35 /* CodexRPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 551CCC67166C747A372C73DD /* CodexRPCClient.swift */; };
+		B9F396BBC785E767E51D0141 /* CodexSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D230C1CE270B6130DAA8ED7 /* CodexSupervisor.swift */; };
+		C2A35A03CDAD55E82262E124 /* WindowVibrancyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 778C4E8264C7E860AD2A261D /* WindowVibrancyView.swift */; };
+		CF7B5E1181BE9B2C8D209175 /* codex-aarch64-apple-darwin in Resources */ = {isa = PBXBuildFile; fileRef = D2668E421654CF9F93B1D932 /* codex-aarch64-apple-darwin */; };
+		D3BB6F45C6F9005C60649188 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8F2020DEFFA6F5E20D341DC /* ChatStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0D230C1CE270B6130DAA8ED7 /* CodexSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSupervisor.swift; sourceTree = "<group>"; };
+		0F1218499DCD2B77E2360263 /* ChatPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPaneView.swift; sourceTree = "<group>"; };
+		17A6767BFDFB94F518E795B5 /* PromptDockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDockView.swift; sourceTree = "<group>"; };
+		5040D54FA55247AEF76881B5 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
+		551CCC67166C747A372C73DD /* CodexRPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRPCClient.swift; sourceTree = "<group>"; };
+		5AC3BDA00E2A03C1333D03B3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		778C4E8264C7E860AD2A261D /* WindowVibrancyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowVibrancyView.swift; sourceTree = "<group>"; };
+		8240FA6B8FF631FC9AC2991B /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		8B8272B6356EC8E52533D741 /* Modex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Modex.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		92D52613EAE875F146B9EDBD /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		D2668E421654CF9F93B1D932 /* codex-aarch64-apple-darwin */ = {isa = PBXFileReference; path = "codex-aarch64-apple-darwin"; sourceTree = "<group>"; };
+		D499FEE229016A6D9597E1EB /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		D8F2020DEFFA6F5E20D341DC /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
+		E463D1E0125298691BA3CD08 /* ModexApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModexApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0E5C45256736E921AB63BF09 /* src-tauri */ = {
+			isa = PBXGroup;
+			children = (
+				B4AF2E1D5F7766366060A400 /* binaries */,
+			);
+			path = "src-tauri";
+			sourceTree = "<group>";
+		};
+		6237324407197607990E8C69 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				5AC3BDA00E2A03C1333D03B3 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		6EBD82BBF3170BD8E446E566 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				0F1218499DCD2B77E2360263 /* ChatPaneView.swift */,
+				92D52613EAE875F146B9EDBD /* ConversationView.swift */,
+				17A6767BFDFB94F518E795B5 /* PromptDockView.swift */,
+				D499FEE229016A6D9597E1EB /* RootView.swift */,
+				8240FA6B8FF631FC9AC2991B /* SidebarView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		7486D9DA9B547185EDAFEAB9 /* Codex */ = {
+			isa = PBXGroup;
+			children = (
+				551CCC67166C747A372C73DD /* CodexRPCClient.swift */,
+				0D230C1CE270B6130DAA8ED7 /* CodexSupervisor.swift */,
+			);
+			path = Codex;
+			sourceTree = "<group>";
+		};
+		75A22987E8F34BDC01EFEEE1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8B8272B6356EC8E52533D741 /* Modex.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		77A200696E8B9F1654ABDC1F = {
+			isa = PBXGroup;
+			children = (
+				B6AEAC9FC60B6A4723DE753E /* Modex */,
+				6237324407197607990E8C69 /* Resources */,
+				E2E92719C22EA8C65DFD54DD /* Sources */,
+				75A22987E8F34BDC01EFEEE1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A14ADFE8CBA01878795F265B /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				778C4E8264C7E860AD2A261D /* WindowVibrancyView.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		ACD10A468074D7253F55995A /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				5040D54FA55247AEF76881B5 /* ChatMessage.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		B4AF2E1D5F7766366060A400 /* binaries */ = {
+			isa = PBXGroup;
+			children = (
+				D2668E421654CF9F93B1D932 /* codex-aarch64-apple-darwin */,
+			);
+			path = binaries;
+			sourceTree = "<group>";
+		};
+		B6AEAC9FC60B6A4723DE753E /* Modex */ = {
+			isa = PBXGroup;
+			children = (
+				0E5C45256736E921AB63BF09 /* src-tauri */,
+			);
+			name = Modex;
+			path = ..;
+			sourceTree = "<group>";
+		};
+		BA362FF00733FAEA75D5658C /* App */ = {
+			isa = PBXGroup;
+			children = (
+				E463D1E0125298691BA3CD08 /* ModexApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E2E92719C22EA8C65DFD54DD /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				BA362FF00733FAEA75D5658C /* App */,
+				7486D9DA9B547185EDAFEAB9 /* Codex */,
+				ACD10A468074D7253F55995A /* Models */,
+				EAF46CEEEE0865B103AA055F /* Store */,
+				A14ADFE8CBA01878795F265B /* Support */,
+				6EBD82BBF3170BD8E446E566 /* Views */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		EAF46CEEEE0865B103AA055F /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				D8F2020DEFFA6F5E20D341DC /* ChatStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1E2B7F2DA948F1E8C214A577 /* Modex */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2315E8CE381DB2B858E2071 /* Build configuration list for PBXNativeTarget "Modex" */;
+			buildPhases = (
+				DE84CB4B041CCD8639896B7F /* Sources */,
+				4AF64CE81677DC7138519EA3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Modex;
+			packageProductDependencies = (
+			);
+			productName = Modex;
+			productReference = 8B8272B6356EC8E52533D741 /* Modex.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		969F053AFBEF171F60122235 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 49FCAD845A764F76E7C1B4B4 /* Build configuration list for PBXProject "Modex" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 77A200696E8B9F1654ABDC1F;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 75A22987E8F34BDC01EFEEE1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1E2B7F2DA948F1E8C214A577 /* Modex */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4AF64CE81677DC7138519EA3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2E0C2EE8D9C79CDE91019283 /* Assets.xcassets in Resources */,
+				CF7B5E1181BE9B2C8D209175 /* codex-aarch64-apple-darwin in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DE84CB4B041CCD8639896B7F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0F3B3D30FECFDD9633C32E8A /* ChatMessage.swift in Sources */,
+				122044337BFE6AF9A96808EC /* ChatPaneView.swift in Sources */,
+				D3BB6F45C6F9005C60649188 /* ChatStore.swift in Sources */,
+				B5026B1E5AC014A46E475C35 /* CodexRPCClient.swift in Sources */,
+				B9F396BBC785E767E51D0141 /* CodexSupervisor.swift in Sources */,
+				2C9EA784B1094C97EB738703 /* ConversationView.swift in Sources */,
+				A4010A0D292D5FFC2DD9E849 /* ModexApp.swift in Sources */,
+				82071CC624364C203F772097 /* PromptDockView.swift in Sources */,
+				61E5952E194335E02E913C67 /* RootView.swift in Sources */,
+				21008F654A69F73CFB813D43 /* SidebarView.swift in Sources */,
+				C2A35A03CDAD55E82262E124 /* WindowVibrancyView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		236D374D8B85FEF8FC8C27E9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		3F25FBF55A8F48AD79773FD0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Modex — a native macOS client powered by the Codex engine.";
+				INFOPLIST_KEY_NSMainNibFile = "";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.modex.desktop;
+				PRODUCT_NAME = Modex;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		45526626DC430E1CC33B77CA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Modex — a native macOS client powered by the Codex engine.";
+				INFOPLIST_KEY_NSMainNibFile = "";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.modex.desktop;
+				PRODUCT_NAME = Modex;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		E547000D8300AB522C1AB914 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		49FCAD845A764F76E7C1B4B4 /* Build configuration list for PBXProject "Modex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				236D374D8B85FEF8FC8C27E9 /* Debug */,
+				E547000D8300AB522C1AB914 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B2315E8CE381DB2B858E2071 /* Build configuration list for PBXNativeTarget "Modex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3F25FBF55A8F48AD79773FD0 /* Debug */,
+				45526626DC430E1CC33B77CA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 969F053AFBEF171F60122235 /* Project object */;
+}

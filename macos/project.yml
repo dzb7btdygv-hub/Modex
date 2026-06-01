@@ -1,0 +1,41 @@
+name: Modex
+options:
+  bundleIdPrefix: dev.modex
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "26.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # Local development build: skip signing so the app + bundled codex
+    # helper run without an Apple Developer team. Re-enable for distribution.
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: "NO"
+
+targets:
+  Modex:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      # Bundle the Codex engine. Xcode copies it into Modex.app/Contents/Resources.
+      - path: ../src-tauri/binaries/codex-aarch64-apple-darwin
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.modex.desktop
+        PRODUCT_NAME: Modex
+        GENERATE_INFOPLIST_FILE: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Modex — a native macOS client powered by the Codex engine."
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
+        INFOPLIST_KEY_NSMainNibFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        ENABLE_APP_SANDBOX: "NO"
