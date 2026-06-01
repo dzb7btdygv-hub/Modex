@@ -26,12 +26,20 @@ PROJECT="$REPO_ROOT/macos/Modex.xcodeproj"
 APP_SOURCE="$DERIVED_DATA/Build/Products/Debug/Modex.app"
 INSTALL_DIR="${MODEX_INSTALL_DIR:-/Applications}"
 
+stamp_source_commit() {
+  local plist="$1"
+  /usr/libexec/PlistBuddy -c "Set :ModexSourceCommit $BUILD_COMMIT" "$plist" >/dev/null 2>&1 ||
+    /usr/libexec/PlistBuddy -c "Add :ModexSourceCommit string $BUILD_COMMIT" "$plist" >/dev/null
+}
+
 cd "$REPO_ROOT"
 
 if [[ "$PULL" == "true" ]]; then
   git fetch origin
   git pull --ff-only
 fi
+
+BUILD_COMMIT="$(git rev-parse HEAD)"
 
 # Regenerate the Xcode project from project.yml (the committed source of truth).
 xcodegen generate --spec "$REPO_ROOT/macos/project.yml" --project "$REPO_ROOT/macos"
@@ -46,6 +54,7 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO
 
 [[ -d "$APP_SOURCE" ]] || { echo "Built app not found at $APP_SOURCE" >&2; exit 1; }
+stamp_source_commit "$APP_SOURCE/Contents/Info.plist"
 
 mkdir -p "$INSTALL_DIR"
 APP_DEST="$INSTALL_DIR/Modex.app"
@@ -54,6 +63,7 @@ osascript -e 'quit app "Modex"' >/dev/null 2>&1 || true
 sleep 0.5
 rm -rf "$APP_DEST"
 ditto "$APP_SOURCE" "$APP_DEST"
+stamp_source_commit "$APP_DEST/Contents/Info.plist"
 xattr -dr com.apple.quarantine "$APP_DEST" >/dev/null 2>&1 || true
 
 # Re-assert this copy as the canonical "Modex" so Spotlight / Finder / `open -a`

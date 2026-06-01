@@ -2,9 +2,9 @@ import AppKit
 import Foundation
 import Observation
 
-/// Self-updater: periodically compares the local checkout against `origin/main`
-/// and, when behind, lets the user pull + rebuild + relaunch in one click —
-/// the "Update" affordance near the account row.
+/// Self-updater: periodically compares the installed app build against
+/// `origin/main` and, when behind, lets the user pull + rebuild + relaunch in
+/// one click — the "Update" affordance near the account row.
 ///
 /// Adapted from the engine direction Codex prototyped; hardened with an explicit
 /// PATH so `git`/`xcodegen`/`xcodebuild` resolve even when launched from Finder.
@@ -28,6 +28,7 @@ final class UpdateStore {
     private let pollIntervalNanos: UInt64 = 20_000_000_000
 
     private static let toolPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    private static let installedCommitKey = "ModexSourceCommit"
 
     func start() {
         guard checkTask == nil else { return }
@@ -86,7 +87,7 @@ final class UpdateStore {
             let remote = try await runGit(["rev-parse", upstream], in: repo)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            isUpdateAvailable = local != remote
+            isUpdateAvailable = (installedSourceCommit() ?? local) != remote
             message = nil
         } catch {
             isUpdateAvailable = false
@@ -173,6 +174,14 @@ final class UpdateStore {
         env["PATH"] = "\(Self.toolPath):\(env["PATH"] ?? "")"
         env["MODEX_REPO_PATH"] = repo.path
         return env
+    }
+
+    private func installedSourceCommit() -> String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: Self.installedCommitKey) as? String else {
+            return nil
+        }
+        let commit = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return commit.isEmpty ? nil : commit
     }
 
     private func runProcess(_ executable: String, arguments: [String], in directory: URL) async throws -> String {
