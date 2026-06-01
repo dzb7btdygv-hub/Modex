@@ -57,8 +57,8 @@ struct SelectorPill: View {
     }
 }
 
-/// Composer pill (Smart Context). Same look, but it opens *upward* via a popover
-/// (`arrowEdge: .bottom`) so the options never cover the chat box beneath it.
+/// Composer-side pill. Opens upward via a popover so options do not cover the
+/// chat box beneath it.
 struct UpwardSelectorPill: View {
     var systemImage: String? = nil
     let title: String

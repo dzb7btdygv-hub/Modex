@@ -4,9 +4,14 @@ struct ChatPaneView: View {
     @Environment(ChatStore.self) private var store
 
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        VStack(spacing: 0) {
+            TopChatBarView()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ModexDetailSurface().ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
     }
 
     @ViewBuilder

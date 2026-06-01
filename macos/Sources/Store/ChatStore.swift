@@ -13,13 +13,14 @@ final class ChatStore {
     private(set) var turnRunning = false
 
     // MARK: - User selections (top-bar model + reasoning, composer context)
-    // UI state for now: the Codex engine keeps using its configured defaults
-    // until the app-server's model/effort schema is confirmed and wired in.
     var selectedModel = "GPT-5.5"
     let availableModels = ["GPT-5.5", "GPT-5.5 Codex", "GPT-5 mini"]
     var reasoning: ReasoningEffort = .high
-    var contextMode = "Smart Context"
-    let contextModes = ["Smart Context", "Current File", "Whole Project"]
+    private(set) var selectedPermission: PermissionMode = .readOnly
+    private(set) var selectedFolderPath: String?
+    private(set) var selectedFolderName = "Choose folder"
+    private(set) var gitBranch: String?
+    private(set) var chatTitle = "New Chat"
 
     let supervisor = CodexSupervisor()
     private var rpc: CodexRPCClient?
@@ -81,15 +82,13 @@ final class ChatStore {
         turnRunning = true
         status = threadId == nil ? "Starting chat…" : "Thinking…"
         messages.append(ChatMessage(id: "user-\(UUID().uuidString)", role: .user, text: text))
+        updateTitleIfNeeded(from: text)
 
         Task {
             do {
                 let threadId = try await ensureThread(rpc)
                 status = "Thinking…"
-                _ = try await rpc.request("turn/start", params: [
-                    "threadId": threadId,
-                    "input": [["type": "text", "text": text, "text_elements": []]],
-                ])
+                _ = try await rpc.request("turn/start", params: turnStartParams(threadId: threadId, text: text))
             } catch {
                 turnRunning = false
                 status = "Could not send message."
@@ -100,11 +99,7 @@ final class ChatStore {
 
     private func ensureThread(_ rpc: CodexRPCClient) async throws -> String {
         if let threadId { return threadId }
-        let result = try await rpc.request("thread/start", params: [
-            "approvalPolicy": "never",
-            "sandbox": "read-only",
-            "ephemeral": true,
-        ])
+        let result = try await rpc.request("thread/start", params: threadStartParams())
         guard
             let dict = result as? [String: Any],
             let thread = dict["thread"] as? [String: Any],
@@ -114,6 +109,112 @@ final class ChatStore {
         }
         threadId = id
         return id
+    }
+
+    func selectPermission(_ permission: PermissionMode) {
+        selectedPermission = permission
+        updateThreadSettingsIfNeeded()
+    }
+
+    func selectModel(_ model: String) {
+        selectedModel = model
+        updateThreadSettingsIfNeeded()
+    }
+
+    func selectReasoning(_ effort: ReasoningEffort) {
+        reasoning = effort
+        updateThreadSettingsIfNeeded()
+    }
+
+    func selectFolder(_ url: URL) {
+        let folder = url.standardizedFileURL
+        selectedFolderPath = folder.path
+        selectedFolderName = folder.lastPathComponent.isEmpty ? folder.path : folder.lastPathComponent
+        gitBranch = nil
+        updateThreadSettingsIfNeeded()
+
+        Task {
+            let branch = await Self.gitBranch(at: folder)
+            if selectedFolderPath == folder.path {
+                gitBranch = branch
+            }
+        }
+    }
+
+    private func threadStartParams() -> [String: Any] {
+        var params: [String: Any] = [
+            "approvalPolicy": "never",
+            "sandbox": selectedPermission.sandboxMode,
+            "ephemeral": false,
+            "model": selectedModel,
+            "serviceName": "modex",
+        ]
+        if let selectedFolderPath {
+            params["cwd"] = selectedFolderPath
+            params["runtimeWorkspaceRoots"] = [selectedFolderPath]
+        }
+        return params
+    }
+
+    private func turnStartParams(threadId: String, text: String) -> [String: Any] {
+        var params: [String: Any] = [
+            "threadId": threadId,
+            "input": [["type": "text", "text": text, "text_elements": []]],
+            "model": selectedModel,
+            "effort": reasoning.rawValue,
+            "sandboxPolicy": selectedPermission.sandboxPolicy(folderPath: selectedFolderPath),
+        ]
+        if let selectedFolderPath {
+            params["cwd"] = selectedFolderPath
+            params["runtimeWorkspaceRoots"] = [selectedFolderPath]
+        }
+        return params
+    }
+
+    private func updateThreadSettingsIfNeeded() {
+        guard let rpc, let threadId, !turnRunning else { return }
+
+        var params: [String: Any] = [
+            "threadId": threadId,
+            "model": selectedModel,
+            "effort": reasoning.rawValue,
+            "sandboxPolicy": selectedPermission.sandboxPolicy(folderPath: selectedFolderPath),
+        ]
+        if let selectedFolderPath {
+            params["cwd"] = selectedFolderPath
+        }
+
+        Task {
+            _ = try? await rpc.request("thread/settings/update", params: params)
+        }
+    }
+
+    private func updateTitleIfNeeded(from text: String) {
+        guard chatTitle == "New Chat" else { return }
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        chatTitle = firstLine.count > 54 ? "\(firstLine.prefix(51))..." : firstLine
+    }
+
+    private static func gitBranch(at folder: URL) async -> String? {
+        await Task.detached {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", folder.path, "branch", "--show-current"]
+            process.standardOutput = output
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return nil }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                let branch = String(decoding: data, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return branch.isEmpty ? nil : branch
+            } catch {
+                return nil
+            }
+        }.value
     }
 
     // MARK: - Notification handling (mirrors handleNotification in App.tsx)

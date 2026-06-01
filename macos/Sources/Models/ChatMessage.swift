@@ -27,6 +27,54 @@ enum SidebarItem: Hashable {
     case recent(UUID)
 }
 
+/// Codex sandbox mode exposed by the composer permission selector.
+enum PermissionMode: String, CaseIterable, Identifiable {
+    case readOnly
+    case write
+    case fullAccess
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .readOnly: return "Read only"
+        case .write: return "Write"
+        case .fullAccess: return "Full access"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .readOnly: return "lock"
+        case .write: return "pencil"
+        case .fullAccess: return "exclamationmark.triangle"
+        }
+    }
+
+    var sandboxMode: String {
+        switch self {
+        case .readOnly: return "read-only"
+        case .write: return "workspace-write"
+        case .fullAccess: return "danger-full-access"
+        }
+    }
+
+    func sandboxPolicy(folderPath: String?) -> [String: Any] {
+        switch self {
+        case .readOnly:
+            return ["type": "readOnly", "networkAccess": false]
+        case .write:
+            return [
+                "type": "workspaceWrite",
+                "networkAccess": false,
+                "writableRoots": folderPath.map { [$0] } ?? [],
+            ]
+        case .fullAccess:
+            return ["type": "dangerFullAccess"]
+        }
+    }
+}
+
 /// Reasoning effort exposed by the top-bar selector (Low → xHigh).
 enum ReasoningEffort: String, CaseIterable, Identifiable {
     case low, medium, high, xhigh

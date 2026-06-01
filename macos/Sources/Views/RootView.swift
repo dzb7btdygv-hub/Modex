@@ -14,9 +14,7 @@ struct RootView: View {
         // No window title — the composer owns model and reasoning controls.
         .navigationTitle("")
         .toolbar(removing: .title)
-        // The window itself is transparent; this is the system material that
-        // frosts the desktop wallpaper behind both columns.
-        .background(WindowVibrancyView().ignoresSafeArea())
+        .background(ModexRootSurface().ignoresSafeArea())
         // Very small, faint, dynamic version readout.
         .overlay(alignment: .bottomTrailing) { versionReadout }
     }

@@ -1,10 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The prompt composer. A thin context pill sits above-left and opens *upward*;
-/// beneath it a compact glass rectangle holds ＋ · the text field · send. The
-/// box grows upward (up to a cap, then scrolls) as you type more lines, carrying
-/// the context pill up with it.
+/// The prompt composer. A thin permission pill sits above-left and opens upward;
+/// beneath it a compact glass rectangle holds ＋ · the text field · send.
 struct PromptDockView: View {
     @Environment(ChatStore.self) private var store
     @State private var draft = ""
@@ -67,14 +65,14 @@ struct PromptDockView: View {
     private var selectorRow: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .center, spacing: 8) {
-                contextSelector
+                permissionSelector
                 Spacer(minLength: 12)
                 modelSelector
                 reasoningSelector
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                contextSelector
+                permissionSelector
                 HStack(spacing: 8) {
                     modelSelector
                     reasoningSelector
@@ -83,14 +81,11 @@ struct PromptDockView: View {
         }
     }
 
-    private var contextSelector: some View {
-        InlineUpwardSelectorPill(
-            systemImage: "sparkles",
-            title: store.contextMode,
-            accessibilityLabel: "Context mode, \(store.contextMode)",
-            options: store.contextModes,
-            selected: store.contextMode
-        ) { store.contextMode = $0 }
+    private var permissionSelector: some View {
+        PermissionSelector(
+            selected: store.selectedPermission,
+            onSelect: store.selectPermission
+        )
     }
 
     private var modelSelector: some View {
@@ -100,7 +95,7 @@ struct PromptDockView: View {
             accessibilityLabel: "Model, \(store.selectedModel)",
             options: store.availableModels,
             selected: store.selectedModel
-        ) { store.selectedModel = $0 }
+        ) { store.selectModel($0) }
     }
 
     private var reasoningSelector: some View {
@@ -110,7 +105,7 @@ struct PromptDockView: View {
             accessibilityLabel: "Reasoning, \(store.reasoning.label)",
             options: ReasoningEffort.allCases.map(\.label),
             selected: store.reasoning.label
-        ) { if let level = ReasoningEffort(label: $0) { store.reasoning = level } }
+        ) { if let level = ReasoningEffort(label: $0) { store.selectReasoning(level) } }
     }
 
     private func submit() {
@@ -148,6 +143,93 @@ private struct SendButton: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
         .help("Send")
         .accessibilityLabel("Send message")
+    }
+}
+
+private struct PermissionSelector: View {
+    let selected: PermissionMode
+    let onSelect: (PermissionMode) -> Void
+
+    @State private var isOpen = false
+    @State private var hovering = false
+
+    private let danger = Color(red: 1.0, green: 0.31, blue: 0.18)
+
+    private var tint: Color {
+        selected == .fullAccess ? danger : .secondary
+    }
+
+    var body: some View {
+        Button {
+            isOpen.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: selected.systemImage)
+                    .font(.caption.weight(.semibold))
+                Text(selected.label)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(0.55)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(hovering ? tint.opacity(0.10) : Color.clear, in: .capsule)
+            .overlay(Capsule().strokeBorder(selected == .fullAccess ? danger.opacity(0.42) : .clear, lineWidth: 0.75))
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .accessibilityLabel("Permissions, \(selected.label)")
+        .accessibilityValue(selected.sandboxMode)
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(PermissionMode.allCases) { mode in
+                    PermissionRow(mode: mode, selected: mode == selected) {
+                        onSelect(mode)
+                        isOpen = false
+                    }
+                }
+            }
+            .padding(6)
+            .frame(width: 190)
+        }
+    }
+}
+
+private struct PermissionRow: View {
+    let mode: PermissionMode
+    let selected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+    private let danger = Color(red: 1.0, green: 0.31, blue: 0.18)
+
+    private var tint: Color {
+        mode == .fullAccess ? danger : .primary
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: selected ? "checkmark" : mode.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 14)
+                Text(mode.label).font(.callout)
+                Spacer(minLength: 12)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hovering ? tint.opacity(0.09) : .clear, in: .rect(cornerRadius: 7))
+            .contentShape(.rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

@@ -48,6 +48,7 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .background(ModexSidebarSurface().ignoresSafeArea())
         .safeAreaInset(edge: .top, spacing: 0) {
             Color.clear.frame(height: 14) // breathing room under the traffic lights
         }
