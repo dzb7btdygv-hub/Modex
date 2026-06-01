@@ -11,7 +11,9 @@ struct RootView: View {
         } detail: {
             ChatPaneView()
         }
-        .navigationTitle("Modex")
+        // No window title — the model + reasoning pills occupy the leading slot.
+        .navigationTitle("")
+        .toolbar(removing: .title)
         // The window itself is transparent; this is the system material that
         // frosts the desktop wallpaper behind both columns.
         .background(WindowVibrancyView().ignoresSafeArea())

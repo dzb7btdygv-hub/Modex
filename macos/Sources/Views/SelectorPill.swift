@@ -1,17 +1,69 @@
 import SwiftUI
 
-/// A liquid-glass pill that shows the current selection and, when tapped,
-/// expands into a small rounded "box" of options. Shared by the top-bar model
-/// and reasoning selectors and the composer's context selector.
-///
-/// `opensUpward` flips the popover so the box grows away from the composer
-/// (upward) instead of downward — keeping it from covering the chat box.
+/// Shared liquid-glass pill label: icon · title · chevron, on a glass capsule.
+private struct PillLabel: View {
+    var systemImage: String?
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .bold))
+                .opacity(0.5)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: .capsule)
+        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.75))
+    }
+}
+
+/// Top-bar pill (model, reasoning). Backed by a native menu: instant to open,
+/// drops *down* — which is what we want under the title bar.
 struct SelectorPill: View {
     var systemImage: String? = nil
     let title: String
     let options: [String]
     let selected: String
-    var opensUpward: Bool = false
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    if option == selected {
+                        Label(option, systemImage: "checkmark")
+                    } else {
+                        Text(option)
+                    }
+                }
+            }
+        } label: {
+            PillLabel(systemImage: systemImage, title: title)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
+/// Composer pill (Smart Context). Same look, but it opens *upward* via a popover
+/// (`arrowEdge: .bottom`) so the options never cover the chat box beneath it.
+struct UpwardSelectorPill: View {
+    var systemImage: String? = nil
+    let title: String
+    let options: [String]
+    let selected: String
     let onSelect: (String) -> Void
 
     @State private var isOpen = false
@@ -20,33 +72,19 @@ struct SelectorPill: View {
         Button {
             isOpen.toggle()
         } label: {
-            HStack(spacing: 5) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .opacity(0.5)
-            }
-            .fixedSize()
+            PillLabel(systemImage: systemImage, title: title)
         }
-        .buttonStyle(.glass)
-        .popover(isPresented: $isOpen, arrowEdge: opensUpward ? .bottom : .top) {
+        .buttonStyle(.plain)
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
             SelectorBox(options: options, selected: selected) { choice in
                 onSelect(choice)
                 isOpen = false
             }
         }
-        .help(title)
     }
 }
 
-/// The popover body: a vertical stack of choices — taller than it is wide, so
-/// it reads as a rectangle dropping down (or rising up) from the pill.
+/// The popover body for the upward selector — a vertical list of choices.
 private struct SelectorBox: View {
     let options: [String]
     let selected: String
@@ -61,7 +99,7 @@ private struct SelectorBox: View {
             }
         }
         .padding(6)
-        .frame(width: 218)
+        .frame(width: 200)
     }
 }
 
@@ -74,11 +112,11 @@ private struct SelectorRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Text(label).font(.callout)
-                Spacer(minLength: 12)
                 Image(systemName: "checkmark")
                     .font(.caption.weight(.semibold))
                     .opacity(isSelected ? 1 : 0)
+                Text(label).font(.callout)
+                Spacer(minLength: 12)
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 9)

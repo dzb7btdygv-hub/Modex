@@ -16,12 +16,11 @@ struct PromptDockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SelectorPill(
+            UpwardSelectorPill(
                 systemImage: "sparkles",
                 title: store.contextMode,
                 options: store.contextModes,
-                selected: store.contextMode,
-                opensUpward: true
+                selected: store.contextMode
             ) { store.contextMode = $0 }
             .padding(.leading, 4)
 
