@@ -7,28 +7,6 @@ struct ChatPaneView: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .toolbar {
-                // Both pills live in ONE leading item so the toolbar doesn't wrap
-                // them in a shared glass platter (which read as "two boxes in one
-                // pill"). They sit on the left, where the title used to be.
-                ToolbarItem(placement: .navigation) {
-                    HStack(spacing: 8) {
-                        SelectorPill(
-                            systemImage: "cpu",
-                            title: store.selectedModel,
-                            options: store.availableModels,
-                            selected: store.selectedModel
-                        ) { store.selectedModel = $0 }
-
-                        SelectorPill(
-                            systemImage: "brain",
-                            title: store.reasoning.label,
-                            options: ReasoningEffort.allCases.map(\.label),
-                            selected: store.reasoning.label
-                        ) { if let level = ReasoningEffort(label: $0) { store.reasoning = level } }
-                    }
-                }
-            }
     }
 
     @ViewBuilder

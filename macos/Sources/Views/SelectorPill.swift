@@ -84,6 +84,52 @@ struct UpwardSelectorPill: View {
     }
 }
 
+/// Composer-side selector with no persistent backplate. It keeps the click
+/// target but avoids the toolbar-style capsule behind model/reasoning controls.
+struct InlineUpwardSelectorPill: View {
+    var systemImage: String? = nil
+    let title: String
+    let options: [String]
+    let selected: String
+    let onSelect: (String) -> Void
+
+    @State private var isOpen = false
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            isOpen.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.caption.weight(.semibold))
+                }
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(0.55)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(hovering ? Color.primary.opacity(0.07) : Color.clear, in: .capsule)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+            SelectorBox(options: options, selected: selected) { choice in
+                onSelect(choice)
+                isOpen = false
+            }
+        }
+    }
+}
+
 /// The popover body for the upward selector — a vertical list of choices.
 private struct SelectorBox: View {
     let options: [String]
