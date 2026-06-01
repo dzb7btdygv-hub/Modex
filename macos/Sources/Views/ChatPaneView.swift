@@ -48,13 +48,6 @@ struct ChatPaneView: View {
     private var composer: some View {
         VStack(spacing: 10) {
             PromptDockView()
-            Label {
-                Text("Try something like ") + Text("“Add social login to the auth system”").foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: "lightbulb")
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
