@@ -17,30 +17,7 @@ struct PromptDockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                UpwardSelectorPill(
-                    systemImage: "sparkles",
-                    title: store.contextMode,
-                    options: store.contextModes,
-                    selected: store.contextMode
-                ) { store.contextMode = $0 }
-
-                Spacer(minLength: 12)
-
-                InlineUpwardSelectorPill(
-                    systemImage: "cpu",
-                    title: store.selectedModel,
-                    options: store.availableModels,
-                    selected: store.selectedModel
-                ) { store.selectedModel = $0 }
-
-                InlineUpwardSelectorPill(
-                    systemImage: "brain",
-                    title: store.reasoning.label,
-                    options: ReasoningEffort.allCases.map(\.label),
-                    selected: store.reasoning.label
-                ) { if let level = ReasoningEffort(label: $0) { store.reasoning = level } }
-            }
+            selectorRow
             .padding(.horizontal, 4)
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -48,13 +25,14 @@ struct PromptDockView: View {
                     // Attach context.
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 32, height: 32)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .help("Add context")
+                .accessibilityLabel("Add context")
 
                 ZStack(alignment: .leading) {
                     ComposerTextView(
@@ -66,7 +44,7 @@ struct PromptDockView: View {
 
                     if draft.isEmpty {
                         Text("Ask Modex to build anything…")
-                            .font(.system(size: 15))
+                            .font(.body)
                             .foregroundStyle(.secondary)
                             .allowsHitTesting(false)
                     }
@@ -84,6 +62,55 @@ struct PromptDockView: View {
             )
             .contentShape(.rect(cornerRadius: 22))
         }
+    }
+
+    private var selectorRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 8) {
+                contextSelector
+                Spacer(minLength: 12)
+                modelSelector
+                reasoningSelector
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                contextSelector
+                HStack(spacing: 8) {
+                    modelSelector
+                    reasoningSelector
+                }
+            }
+        }
+    }
+
+    private var contextSelector: some View {
+        InlineUpwardSelectorPill(
+            systemImage: "sparkles",
+            title: store.contextMode,
+            accessibilityLabel: "Context mode, \(store.contextMode)",
+            options: store.contextModes,
+            selected: store.contextMode
+        ) { store.contextMode = $0 }
+    }
+
+    private var modelSelector: some View {
+        InlineUpwardSelectorPill(
+            systemImage: "cpu",
+            title: store.selectedModel,
+            accessibilityLabel: "Model, \(store.selectedModel)",
+            options: store.availableModels,
+            selected: store.selectedModel
+        ) { store.selectedModel = $0 }
+    }
+
+    private var reasoningSelector: some View {
+        InlineUpwardSelectorPill(
+            systemImage: "brain",
+            title: store.reasoning.label,
+            accessibilityLabel: "Reasoning, \(store.reasoning.label)",
+            options: ReasoningEffort.allCases.map(\.label),
+            selected: store.reasoning.label
+        ) { if let level = ReasoningEffort(label: $0) { store.reasoning = level } }
     }
 
     private func submit() {
@@ -107,7 +134,7 @@ private struct SendButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.up")
-                .font(.system(size: 15, weight: .bold))
+                .font(.body.weight(.bold))
                 .foregroundStyle(active ? Color.white : Color.secondary)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(pink).opacity(active ? 1 : 0))
@@ -120,6 +147,7 @@ private struct SendButton: View {
         .animation(.smooth(duration: 0.18), value: active)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
         .help("Send")
+        .accessibilityLabel("Send message")
     }
 }
 
@@ -150,7 +178,7 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.isEditable = isEnabled
         textView.isSelectable = true
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 15)
+        textView.font = .preferredFont(forTextStyle: .body, options: [:])
         textView.textColor = .labelColor
         textView.insertionPointColor = .labelColor
         textView.textContainerInset = NSSize(width: 0, height: 6)
@@ -162,6 +190,8 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
         textView.string = text
+        textView.setAccessibilityLabel("Message")
+        textView.setAccessibilityPlaceholderValue("Ask Modex to build anything")
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
@@ -176,6 +206,8 @@ private struct ComposerTextView: NSViewRepresentable {
         }
         textView.isEditable = isEnabled
         textView.onSubmit = onSubmit
+        textView.setAccessibilityLabel("Message")
+        textView.setAccessibilityPlaceholderValue("Ask Modex to build anything")
         context.coordinator.parent = self
         context.coordinator.updateHeight()
         scrollView.hasVerticalScroller = height >= maxHeight

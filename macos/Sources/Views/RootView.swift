@@ -11,7 +11,7 @@ struct RootView: View {
         } detail: {
             ChatPaneView()
         }
-        // No window title — the model + reasoning pills occupy the leading slot.
+        // No window title — the composer owns model and reasoning controls.
         .navigationTitle("")
         .toolbar(removing: .title)
         // The window itself is transparent; this is the system material that
@@ -27,7 +27,7 @@ struct RootView: View {
             Text(updates.versionString)
                 .font(.system(size: 9, weight: .regular).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .opacity(0.4)
+                .opacity(0.62)
                 .padding(.trailing, 9)
                 .padding(.bottom, 6)
                 .allowsHitTesting(false)

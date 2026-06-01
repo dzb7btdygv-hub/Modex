@@ -89,6 +89,7 @@ struct UpwardSelectorPill: View {
 struct InlineUpwardSelectorPill: View {
     var systemImage: String? = nil
     let title: String
+    var accessibilityLabel: String? = nil
     let options: [String]
     let selected: String
     let onSelect: (String) -> Void
@@ -121,6 +122,8 @@ struct InlineUpwardSelectorPill: View {
         .buttonStyle(.plain)
         .fixedSize()
         .onHover { hovering = $0 }
+        .accessibilityLabel(accessibilityLabel ?? title)
+        .accessibilityValue(selected)
         .popover(isPresented: $isOpen, arrowEdge: .bottom) {
             SelectorBox(options: options, selected: selected) { choice in
                 onSelect(choice)

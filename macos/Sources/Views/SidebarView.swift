@@ -18,17 +18,20 @@ struct SidebarView: View {
             Section {
                 ForEach(recents) { chat in
                     HStack(spacing: 8) {
-                        Text(chat.title).lineLimit(1)
+                        Text(chat.title)
+                            .lineLimit(1)
                         Spacer(minLength: 8)
                         Text(chat.timeAgo)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary.opacity(0.66))
                     }
                     .tag(SidebarItem.recent(chat.id))
                 }
             } header: {
                 HStack {
                     Text("Recent Chats")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary.opacity(0.62))
                     Spacer()
                     Button {
                         // Start a new chat.
@@ -36,8 +39,9 @@ struct SidebarView: View {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.68))
                     .help("New chat")
+                    .accessibilityLabel("New chat")
                     .padding(.trailing, 8) // nudged left off the edge
                 }
             }
@@ -68,7 +72,7 @@ private struct AccountFooter: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("Alex").font(.subheadline.weight(.medium))
-                Text("Pro Plan").font(.caption).foregroundStyle(.secondary)
+                Text("Pro Plan").font(.caption.weight(.medium)).foregroundStyle(.primary.opacity(0.7))
             }
 
             Spacer(minLength: 8)
@@ -82,7 +86,7 @@ private struct AccountFooter: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.7))
                     .frame(width: 26, height: 26)
                     .contentShape(Rectangle())
             }
@@ -134,6 +138,7 @@ private struct UpdateButton: View {
         }
         .disabled(updates.isUpdating)
         .help("A new version is available — click to update")
+        .accessibilityLabel(updates.isUpdating ? "Updating Modex" : "Update Modex")
     }
 }
 
@@ -147,7 +152,7 @@ private struct AccountPopover: View {
                     .overlay(Text("A").font(.headline).foregroundStyle(.white))
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Alex").font(.subheadline.weight(.semibold))
-                    Text("Pro Plan").font(.caption).foregroundStyle(.secondary)
+                    Text("Pro Plan").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
