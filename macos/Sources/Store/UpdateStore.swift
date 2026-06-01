@@ -16,6 +16,11 @@ final class UpdateStore {
     private(set) var isUpdating = false
     private(set) var message: String?
 
+    /// Dynamic version, e.g. "v1.53". Derived from how much source has actually
+    /// changed (cumulative git lines ÷ 1000): a tiny edit nudges the decimals, a
+    /// big feature jumps the whole number. No manual bumping, no flat +1.
+    private(set) var versionString = ""
+
     private var repoRoot: URL?
     private var checkTask: Task<Void, Never>?
 
@@ -27,11 +32,34 @@ final class UpdateStore {
     func start() {
         guard checkTask == nil else { return }
         checkTask = Task {
+            await computeVersion()
             await checkForUpdates()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: pollIntervalNanos)
                 await checkForUpdates()
             }
+        }
+    }
+
+    /// Recomputes the displayed version from the current checkout's git history.
+    func computeVersion() async {
+        do {
+            let repo = try await resolveRepoRoot()
+            let out = try await runGit(
+                ["log", "--pretty=format:", "--numstat", "--", "macos/Sources", "macos/project.yml"],
+                in: repo
+            )
+            var total = 0
+            for line in out.split(separator: "\n") {
+                let cols = line.split(separator: "\t")
+                guard cols.count >= 2, let added = Int(cols[0]), let deleted = Int(cols[1]) else { continue }
+                total += added + deleted
+            }
+            if total > 0 {
+                versionString = String(format: "v%.2f", Double(total) / 1000.0)
+            }
+        } catch {
+            // Leave the previous value; the version label simply stays hidden.
         }
     }
 
