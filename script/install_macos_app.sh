@@ -32,6 +32,10 @@ stamp_source_commit() {
     /usr/libexec/PlistBuddy -c "Add :ModexSourceCommit string $BUILD_COMMIT" "$plist" >/dev/null
 }
 
+resign_app() {
+  /usr/bin/codesign --force --deep --sign - "$1" >/dev/null
+}
+
 cd "$REPO_ROOT"
 
 if [[ "$PULL" == "true" ]]; then
@@ -55,6 +59,7 @@ xcodebuild \
 
 [[ -d "$APP_SOURCE" ]] || { echo "Built app not found at $APP_SOURCE" >&2; exit 1; }
 stamp_source_commit "$APP_SOURCE/Contents/Info.plist"
+resign_app "$APP_SOURCE"
 
 mkdir -p "$INSTALL_DIR"
 APP_DEST="$INSTALL_DIR/Modex.app"
@@ -64,6 +69,7 @@ sleep 0.5
 rm -rf "$APP_DEST"
 ditto "$APP_SOURCE" "$APP_DEST"
 stamp_source_commit "$APP_DEST/Contents/Info.plist"
+resign_app "$APP_DEST"
 xattr -dr com.apple.quarantine "$APP_DEST" >/dev/null 2>&1 || true
 
 # Re-assert this copy as the canonical "Modex" so Spotlight / Finder / `open -a`
