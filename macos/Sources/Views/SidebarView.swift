@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Stripped-to-basics sidebar: just recent chats + the account row. Native
@@ -5,39 +6,78 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(ChatStore.self) private var store
     @Binding var selection: SidebarItem?
+    @State private var renameTarget: ProjectSummary?
+    @State private var renameDraft = ""
+    /// Projects currently unfolded to show their chats.
+    @State private var expandedProjects: Set<String> = []
+    @State private var projectsCollapsed = false
+    @State private var chatsCollapsed = false
 
     var body: some View {
-        List(selection: $selection) {
-            Section {
-                ForEach(store.recentChats) { chat in
-                    HStack(spacing: 8) {
-                        Text(chat.title)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(chat.timeAgo)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.primary.opacity(0.66))
+        List {
+            if !store.projects.isEmpty {
+                Section {
+                    if !projectsCollapsed {
+                        ForEach(store.projects) { project in
+                            ProjectRow(
+                                project: project,
+                                isActive: project.id == store.activeProjectId,
+                                isExpanded: expandedProjects.contains(project.id),
+                                onToggle: { toggle(project) },
+                                onNewChat: { store.startNewChatInProject(project.id) },
+                                onRename: { renameDraft = project.name; renameTarget = project },
+                                onRemove: { store.removeProject(project.id) }
+                            )
+                            .listRow()
+
+                            if expandedProjects.contains(project.id) {
+                                ForEach(store.projectChats(project.id)) { chat in
+                                    ChatRow(
+                                        chat: chat,
+                                        indent: 26,
+                                        isActive: project.id == store.activeProjectId && chat.id == store.selectedChatId,
+                                        onOpen: { store.openProjectChat(projectId: project.id, threadId: chat.id) }
+                                    )
+                                    .listRow()
+                                }
+                            }
+                        }
+                        if store.isInProject {
+                            NoFolderRow { store.closeActiveFolder() }.listRow()
+                        }
                     }
-                    .tag(SidebarItem.recent(chat.id))
+                } header: {
+                    SidebarSectionHeader(title: "Projects", collapsed: projectsCollapsed) {
+                        withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
+                    } trailing: {
+                        SidebarHeaderButton(systemImage: "folder.badge.plus", help: "Open a folder as a project") {
+                            store.presentFolderPicker()
+                        }
+                    }
                 }
-            } header: {
-                HStack {
-                    Text(store.activeProjectName ?? "Recent Chats")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary.opacity(0.62))
-                        .lineLimit(1)
-                        .help(store.activeProjectName.map { "Chats in \($0)" } ?? "Recent chats")
-                    Spacer()
-                    Button {
-                        store.startNewChat()
-                    } label: {
-                        Image(systemName: "plus")
+            }
+
+            if store.showFolderlessChats {
+                Section {
+                    if !chatsCollapsed {
+                        ForEach(store.folderlessChats) { chat in
+                            ChatRow(
+                                chat: chat,
+                                indent: 8,
+                                isActive: !store.isInProject && chat.id == store.selectedChatId,
+                                onOpen: { store.selectChat(chat.id) }
+                            )
+                            .listRow()
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary.opacity(0.68))
-                    .help("New chat")
-                    .accessibilityLabel("New chat")
-                    .padding(.trailing, 8) // nudged left off the edge
+                } header: {
+                    SidebarSectionHeader(title: "Chats", collapsed: chatsCollapsed) {
+                        withAnimation(.easeInOut(duration: 0.18)) { chatsCollapsed.toggle() }
+                    } trailing: {
+                        if !store.isInProject {
+                            SidebarHeaderButton(systemImage: "plus", help: "New chat") { store.startNewChat() }
+                        }
+                    }
                 }
             }
         }
@@ -50,16 +90,335 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             AccountFooter()
         }
+        .onAppear { if let id = store.activeProjectId { expandedProjects.insert(id) } }
+        .onChange(of: store.activeProjectId) { _, id in if let id { expandedProjects.insert(id) } }
+        .alert(
+            "Rename Project",
+            isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } }),
+            presenting: renameTarget
+        ) { project in
+            TextField("Name", text: $renameDraft)
+            Button("Rename") {
+                store.renameProject(project.id, to: renameDraft)
+                renameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        } message: { _ in
+            Text("Display name for this project in Modex.")
+        }
+    }
+
+    private func toggle(_ project: ProjectSummary) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if expandedProjects.contains(project.id) {
+                expandedProjects.remove(project.id)
+            } else {
+                expandedProjects.insert(project.id)
+                store.loadProjectThreads(project.id)
+            }
+        }
+    }
+}
+
+// MARK: - Projects
+
+/// A project header row in the tree. Tapping toggles its unfold; the active
+/// project is tinted. On hover a "⋯" menu offers rename / reveal / remove.
+private struct ProjectRow: View {
+    let project: ProjectSummary
+    let isActive: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onNewChat: () -> Void
+    let onRename: () -> Void
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.primary.opacity(0.4))
+                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                    .frame(width: 10)
+                Image(systemName: isActive ? "folder.fill" : "folder")
+                    .font(.callout)
+                    .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+                Text(project.name)
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                if project.isMissing {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .help("This project's folder is missing")
+                }
+                Spacer(minLength: 4)
+                Color.clear.frame(width: 46, height: 1) // room for the + and ⋯ buttons
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowTint(isActive: isActive, hovering: hovering), in: .rect(cornerRadius: 7))
+            .contentShape(.rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if hovering {
+                HStack(spacing: 1) {
+                    ProjectRowIconButton(systemImage: "plus", help: "New chat in this project", action: onNewChat)
+                    ProjectRowMenu(onRename: onRename, onReveal: revealInFinder, onRemove: onRemove)
+                }
+                .padding(.trailing, 6)
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .accessibilityLabel("Project \(project.name)\(isActive ? ", active" : ""), \(isExpanded ? "expanded" : "collapsed")")
+    }
+
+    private func revealInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+    }
+}
+
+/// A chat row (Codex thread or local chat), styled like a project row so
+/// selection looks identical. `indent` nests it beneath its project.
+private struct ChatRow: View {
+    let chat: RecentChat
+    var indent: CGFloat = 8
+    let isActive: Bool
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 8) {
+                Text(chat.title)
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Text(chat.timeAgo)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary.opacity(0.5))
+            }
+            .padding(.leading, indent)
+            .padding(.trailing, 8)
+            .frame(height: 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowTint(isActive: isActive, hovering: hovering), in: .rect(cornerRadius: 7))
+            .contentShape(.rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// A small hover icon button on a project row (the "+" new-chat affordance),
+/// matching the ⋯ menu's look.
+private struct ProjectRowIconButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 5))
+                .contentShape(.rect(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// Collapsible section header with a disclosure chevron + optional trailing control.
+private struct SidebarSectionHeader<Trailing: View>: View {
+    let title: String
+    let collapsed: Bool
+    let onToggle: () -> Void
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: onToggle) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(collapsed ? -90 : 0))
+                        .foregroundStyle(.primary.opacity(0.5))
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary.opacity(0.62))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            trailing()
+        }
+        .padding(.vertical, 3)
+        .help(collapsed ? "Show \(title)" : "Hide \(title)")
+    }
+}
+
+private struct SidebarHeaderButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary.opacity(0.68))
+        .help(help)
+        .accessibilityLabel(help)
+        .padding(.trailing, 8)
+    }
+}
+
+/// Shared row tint so projects and chats select/hover identically.
+private func rowTint(isActive: Bool, hovering: Bool) -> Color {
+    if isActive { return Color.accentColor.opacity(0.16) }
+    return hovering ? Color.primary.opacity(0.06) : .clear
+}
+
+private extension View {
+    /// Sidebar row chrome: no separator, clear background, tight insets so the
+    /// tinted selection reads as an inset box like the native sidebar.
+    func listRow() -> some View {
+        listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+    }
+}
+
+/// The hover "⋯" affordance on a project row. Sits in an overlay (not nested in
+/// the row's button) so its menu captures clicks cleanly.
+private struct ProjectRowMenu: View {
+    let onRename: () -> Void
+    let onReveal: () -> Void
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            Button(action: onRename) { Label("Rename…", systemImage: "pencil") }
+            Button(action: onReveal) { Label("Reveal in Finder", systemImage: "folder") }
+            Divider()
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove from Sidebar", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 5))
+                .contentShape(.rect(cornerRadius: 5))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Project options")
+        .accessibilityLabel("Project options")
+    }
+}
+
+/// Leaves the active project to work folderless (chats move to the "Chats" list).
+private struct NoFolderRow: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.badge.minus")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                Text("Work without a folder")
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hovering ? Color.primary.opacity(0.06) : .clear, in: .rect(cornerRadius: 7))
+            .contentShape(.rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .help("Work outside any project")
     }
 }
 
 // MARK: - Account row
 
+/// The account area's backdrop. Uses behind-window vibrancy so it shows the
+/// wallpaper (matching the sidebar) rather than a flat black fill, while still
+/// occluding the chat list that scrolls behind it.
+private struct AccountSurface: View {
+    var body: some View {
+        ZStack {
+            WindowVibrancyView(material: .sidebar, blendingMode: .behindWindow)
+            Color(nsColor: .controlBackgroundColor).opacity(0.22)
+        }
+    }
+}
+
 private struct AccountFooter: View {
     @Environment(UpdateStore.self) private var updates
-    @State private var showAccount = false
+    @State private var expanded = false
+
+    private var anim: Animation { .spring(response: 0.36, dampingFraction: 0.9) }
 
     var body: some View {
+        accountRow
+            // Wallpaper-backed so chat text scrolling under the bar is occluded.
+            .background(AccountSurface())
+            // Hidden while expanded — the raised replica below stands in for it.
+            .opacity(expanded ? 0 : 1)
+            .allowsHitTesting(!expanded)
+            .overlay(alignment: .bottom) {
+                if expanded {
+                    // The account info rises and the menu fills in beneath it,
+                    // on the same wallpaper surface as the sidebar so it reads as
+                    // part of it (not a black card). An overlay (not taller inset
+                    // content) keeps the window from resizing.
+                    VStack(spacing: 0) {
+                        accountRow
+                        Divider()
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 4)
+                        menuItems
+                    }
+                    .background(AccountSurface())
+                    .overlay(alignment: .top) {
+                        Divider().opacity(0.6) // delineate the rising panel from the list
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(1)
+                }
+            }
+    }
+
+    private var accountRow: some View {
         HStack(spacing: 9) {
             Circle()
                 .fill(Color.accentColor.gradient)
@@ -80,23 +439,34 @@ private struct AccountFooter: View {
             }
 
             Button {
-                showAccount.toggle()
+                withAnimation(anim) { expanded.toggle() }
             } label: {
-                Image(systemName: "chevron.down")
+                Image(systemName: "chevron.up")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.primary.opacity(0.7))
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
                     .frame(width: 26, height: 26)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Account")
-            .popover(isPresented: $showAccount, arrowEdge: .bottom) {
-                AccountPopover()
-            }
+            .accessibilityLabel(expanded ? "Hide account menu" : "Show account menu")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
+
+    private var menuItems: some View {
+        VStack(spacing: 2) {
+            AccountRow(title: "Settings", icon: "gearshape") { collapse() }
+            AccountRow(title: "Manage Subscription", icon: "creditcard") { collapse() }
+            AccountRow(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", role: .destructive) { collapse() }
+        }
+        .padding(.horizontal, 6)
+        .padding(.bottom, 8)
+    }
+
+    private func collapse() { withAnimation(anim) { expanded = false } }
 }
 
 /// Pink update pill: a compact icon that, on hover, grows leftward into a
@@ -243,43 +613,6 @@ private struct UpdateErrorPopover: View {
         }
         .padding(14)
         .frame(width: 260)
-    }
-}
-
-private struct AccountPopover: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(Color.accentColor.gradient)
-                    .frame(width: 38, height: 38)
-                    .overlay(Text("A").font(.headline).foregroundStyle(.white))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Alex").font(.subheadline.weight(.semibold))
-                    Text("Pro Plan").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
-
-            Divider()
-
-            VStack(spacing: 2) {
-                AccountRow(title: "Settings", icon: "gearshape") {}
-                AccountRow(title: "Manage Subscription", icon: "creditcard") {}
-            }
-            .padding(6)
-
-            Divider()
-
-            VStack(spacing: 2) {
-                AccountRow(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", role: .destructive) {}
-            }
-            .padding(6)
-        }
-        .frame(width: 250)
     }
 }
 
