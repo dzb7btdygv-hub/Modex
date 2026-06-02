@@ -10,19 +10,27 @@ import Foundation
 actor CodexRPCClient {
     typealias NotificationHandler = @MainActor (String, [String: Any]?) -> Void
     typealias CloseHandler = @MainActor (String) -> Void
+    typealias ServerRequestHandler = @MainActor (String, Bool) -> Void
 
     private let task: URLSessionWebSocketTask
     private let onNotification: NotificationHandler
     private let onClose: CloseHandler
+    private let onServerRequest: ServerRequestHandler?
 
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Any?, Error>] = [:]
     private var closed = false
 
-    init(url: URL, onNotification: @escaping NotificationHandler, onClose: @escaping CloseHandler) {
+    init(
+        url: URL,
+        onNotification: @escaping NotificationHandler,
+        onClose: @escaping CloseHandler,
+        onServerRequest: ServerRequestHandler? = nil
+    ) {
         self.task = URLSession.shared.webSocketTask(with: url)
         self.onNotification = onNotification
         self.onClose = onClose
+        self.onServerRequest = onServerRequest
         self.task.resume()
         Task { await self.receiveLoop() }
     }
@@ -66,8 +74,8 @@ actor CodexRPCClient {
             do {
                 let message = try await task.receive()
                 switch message {
-                case .string(let text): handle(text)
-                case .data(let data): handle(String(decoding: data, as: UTF8.self))
+                case .string(let text): await handle(text)
+                case .data(let data): await handle(String(decoding: data, as: UTF8.self))
                 @unknown default: break
                 }
             } catch {
@@ -81,7 +89,7 @@ actor CodexRPCClient {
         }
     }
 
-    private func handle(_ text: String) {
+    private func handle(_ text: String) async {
         guard
             let data = text.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -105,12 +113,19 @@ actor CodexRPCClient {
 
         // Server-initiated request (needs a reply) vs. fire-and-forget notification.
         if let id {
+            await notifyServerRequest(method, started: true)
             respondToServerRequest(id: id, method: method)
+            await notifyServerRequest(method, started: false)
         } else {
             let params = object["params"] as? [String: Any]
             let handler = onNotification
             Task { @MainActor in handler(method, params) }
         }
+    }
+
+    private func notifyServerRequest(_ method: String, started: Bool) async {
+        guard let handler = onServerRequest else { return }
+        await handler(method, started)
     }
 
     private func respondToServerRequest(id: Int, method: String) {

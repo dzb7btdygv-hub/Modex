@@ -95,3 +95,86 @@ enum ReasoningEffort: String, CaseIterable, Identifiable, Codable {
         self = match
     }
 }
+
+enum ChatTaskStatus: Equatable {
+    case idle
+    case startingCodex
+    case connecting
+    case initializing
+    case ready
+    case creatingThread
+    case sendingMessage
+    case thinking
+    case streamingResponse
+    case runningCommand
+    case editingFiles
+    case waitingForPermission
+    case cancelling
+    case completed
+    case failed(String)
+    case cancelled
+
+    var label: String {
+        switch self {
+        case .idle: return "Idle"
+        case .startingCodex: return "Starting Codex"
+        case .connecting: return "Connecting"
+        case .initializing: return "Initializing"
+        case .ready: return "Ready"
+        case .creatingThread: return "Creating chat"
+        case .sendingMessage: return "Sending"
+        case .thinking: return "Thinking"
+        case .streamingResponse: return "Streaming"
+        case .runningCommand: return "Running command"
+        case .editingFiles: return "Editing files"
+        case .waitingForPermission: return "Waiting for permission"
+        case .cancelling: return "Cancelling"
+        case .completed: return "Completed"
+        case .failed(let message): return message.isEmpty ? "Failed" : message
+        case .cancelled: return "Cancelled"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .idle, .ready, .completed: return "checkmark.circle"
+        case .startingCodex, .connecting, .initializing: return "bolt.horizontal.circle"
+        case .creatingThread, .sendingMessage: return "paperplane"
+        case .thinking: return "brain"
+        case .streamingResponse: return "text.bubble"
+        case .runningCommand: return "terminal"
+        case .editingFiles: return "doc.text"
+        case .waitingForPermission: return "hand.raised"
+        case .cancelling: return "stop.circle"
+        case .failed: return "exclamationmark.triangle"
+        case .cancelled: return "xmark.circle"
+        }
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .startingCodex, .connecting, .initializing, .creatingThread,
+             .sendingMessage, .thinking, .streamingResponse, .runningCommand,
+             .editingFiles, .waitingForPermission, .cancelling:
+            return true
+        case .idle, .ready, .completed, .failed, .cancelled:
+            return false
+        }
+    }
+
+    var tint: StatusTint {
+        switch self {
+        case .failed: return .danger
+        case .cancelling, .cancelled: return .warning
+        case .completed, .ready: return .success
+        default: return .secondary
+        }
+    }
+}
+
+enum StatusTint {
+    case secondary
+    case success
+    case warning
+    case danger
+}

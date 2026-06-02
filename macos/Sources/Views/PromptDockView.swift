@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// The prompt composer. A thin permission pill sits above-left and opens upward;
-/// beneath it a compact glass rectangle holds ＋ · the text field · send.
+/// beneath it a compact glass rectangle holds ＋ · the text field · send/stop.
 struct PromptDockView: View {
     @Environment(ChatStore.self) private var store
     @State private var draft = ""
@@ -12,6 +12,7 @@ struct PromptDockView: View {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var canSend: Bool { store.canSend && hasText }
+    private var canStop: Bool { store.turnRunning }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -49,7 +50,12 @@ struct PromptDockView: View {
                 }
                 .frame(height: textHeight)
 
-                SendButton(active: hasText, enabled: canSend, action: submit)
+                SendButton(
+                    active: hasText,
+                    enabled: canSend || canStop,
+                    isRunning: store.turnRunning,
+                    action: store.turnRunning ? store.cancelTurn : submit
+                )
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -116,33 +122,36 @@ struct PromptDockView: View {
     }
 }
 
-/// Liquid-glass circle that fills with pink once there's something to send.
+/// Liquid-glass circle that fills with pink once there's something to send or stop.
 /// Springy native press + a subtle hover lift.
 private struct SendButton: View {
     let active: Bool
     let enabled: Bool
+    let isRunning: Bool
     let action: () -> Void
 
     @State private var hovering = false
     private let pink = Color(red: 1.0, green: 0.42, blue: 0.72)
+    private var filled: Bool { active || isRunning }
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.up")
+            Image(systemName: isRunning ? "stop.fill" : "arrow.up")
                 .font(.body.weight(.bold))
-                .foregroundStyle(active ? Color.white : Color.secondary)
+                .foregroundStyle(filled ? Color.white : Color.secondary)
                 .frame(width: 32, height: 32)
-                .background(Circle().fill(pink).opacity(active ? 1 : 0))
+                .background(Circle().fill(pink).opacity(filled ? 1 : 0))
                 .background(Color.clear.glassEffect(.regular, in: Circle()))
         }
         .buttonStyle(PressableStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
         .scaleEffect(hovering && enabled ? 1.07 : 1.0)
-        .animation(.smooth(duration: 0.18), value: active)
+        .animation(.smooth(duration: 0.18), value: filled)
+        .animation(.smooth(duration: 0.18), value: isRunning)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
-        .help("Send")
-        .accessibilityLabel("Send message")
+        .help(isRunning ? "Stop" : "Send")
+        .accessibilityLabel(isRunning ? "Stop response" : "Send message")
     }
 }
 

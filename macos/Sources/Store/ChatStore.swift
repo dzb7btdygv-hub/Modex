@@ -13,6 +13,7 @@ final class ChatStore {
 
     private(set) var messages: [ChatMessage] = []
     private(set) var status: String = "Starting Codex…"
+    private(set) var taskStatus: ChatTaskStatus = .startingCodex
     private(set) var isReady = false
     private(set) var turnRunning = false
 
@@ -34,6 +35,7 @@ final class ChatStore {
     private let logger = Logger(subsystem: "dev.modex.desktop", category: "ChatStore")
     private var rpc: CodexRPCClient?
     private var threadId: String?
+    private var currentTurnId: String?
     private var booted = false
     /// Bumped on every (re)boot and teardown so a stale connection's close
     /// handler — fired after we've already moved on — is ignored.
@@ -41,11 +43,37 @@ final class ChatStore {
     /// The text of the most recent turn, so a failed send can be re-attempted
     /// without re-appending the user's message.
     private var lastAttemptedText: String?
+    private var permissionStatusTask: Task<Void, Never>?
+    private var turnCancellationRequested = false
+    private var turnInterruptInFlight = false
     private var chatRecords: [PersistedChat] = []
     private var projectRecords: [PersistedProject] = []
     private var selectedProjectId: String?
 
     var canSend: Bool { isReady && !turnRunning }
+
+    private func setTaskStatus(_ taskStatus: ChatTaskStatus) {
+        guard self.taskStatus != taskStatus else { return }
+        if taskStatus != .waitingForPermission {
+            permissionStatusTask?.cancel()
+            permissionStatusTask = nil
+        }
+        self.taskStatus = taskStatus
+        status = taskStatus.label
+    }
+
+    private func setActiveTurnStatus(_ taskStatus: ChatTaskStatus) {
+        guard !turnCancellationRequested else { return }
+        setTaskStatus(taskStatus)
+    }
+
+    private func resetTurnCancellation() {
+        permissionStatusTask?.cancel()
+        permissionStatusTask = nil
+        currentTurnId = nil
+        turnCancellationRequested = false
+        turnInterruptInFlight = false
+    }
 
     init(errors: ErrorCenter) {
         self.errorCenter = errors
@@ -67,10 +95,11 @@ final class ChatStore {
         bootGeneration += 1
         let generation = bootGeneration
         errorCenter.clearFatal()
+        setTaskStatus(.startingCodex)
 
         do {
             let wsURL = try await supervisor.start()
-            status = "Connecting to Codex…"
+            setTaskStatus(.connecting)
 
             let client = CodexRPCClient(
                 url: wsURL,
@@ -80,11 +109,15 @@ final class ChatStore {
                 onClose: { [weak self] reason in
                     guard let self, self.bootGeneration == generation else { return }
                     self.handleDisconnect(reason: reason)
+                },
+                onServerRequest: { [weak self] method, started in
+                    self?.handleServerRequest(method: method, started: started)
                 }
             )
             rpc = client
 
             do {
+                setTaskStatus(.initializing)
                 _ = try await client.request("initialize", params: [
                     "clientInfo": ["name": "modex", "title": "Modex", "version": "0.1.0"],
                     "capabilities": ["experimentalApi": true, "requestAttestation": false],
@@ -105,18 +138,18 @@ final class ChatStore {
                 return
             }
             isReady = true
-            status = "Ready."
+            setTaskStatus(.ready)
             logger.log("Codex engine ready (generation \(generation)).")
         } catch let modexError as ModexError {
             guard bootGeneration == generation else { return }
             isReady = false
-            status = modexError.title
+            setTaskStatus(.failed(modexError.title))
             errorCenter.present(modexError) { [weak self] in self?.restartCodex() }
         } catch {
             guard bootGeneration == generation else { return }
             isReady = false
             let modexError = ModexError.rpcInitializeFailed(detail: error.localizedDescription)
-            status = modexError.title
+            setTaskStatus(.failed(modexError.title))
             errorCenter.present(modexError) { [weak self] in self?.restartCodex() }
         }
     }
@@ -128,13 +161,14 @@ final class ChatStore {
         let client = rpc
         rpc = nil
         threadId = nil
+        resetTurnCancellation()
         isReady = false
         turnRunning = false
         booted = false
         Task { await client?.close() }
         supervisor.stop()
         errorCenter.clearAll()
-        status = "Starting Codex…"
+        setTaskStatus(.startingCodex)
         logger.log("Restarting Codex engine.")
         bootIfNeeded()
     }
@@ -150,10 +184,11 @@ final class ChatStore {
         let wasRunningTurn = turnRunning
         rpc = nil
         threadId = nil
+        resetTurnCancellation()
         isReady = false
         turnRunning = false
         clearPendingMessages()
-        status = reason
+        setTaskStatus(.failed(reason))
 
         let error = wasRunningTurn
             ? ModexError.streamInterrupted(detail: reason)
@@ -171,8 +206,9 @@ final class ChatStore {
         turnRunning = false
         rpc = nil
         threadId = nil
+        resetTurnCancellation()
         clearPendingMessages()
-        status = "Codex engine exited (status \(code))."
+        setTaskStatus(.failed("Codex engine exited"))
         errorCenter.present(.sidecarCrashed(detail: "Codex engine exited with status \(code).")) {
             [weak self] in self?.restartCodex()
         }
@@ -199,6 +235,9 @@ final class ChatStore {
         chatRecords.insert(chat, at: 0)
         selectedChatId = chat.id
         apply(chat)
+        if isReady {
+            setTaskStatus(.ready)
+        }
         refreshRecentChats()
         saveSession()
     }
@@ -211,6 +250,9 @@ final class ChatStore {
         persistCurrentChat()
         selectedChatId = id
         apply(chat)
+        if isReady {
+            setTaskStatus(.ready)
+        }
         refreshRecentChats()
         saveSession()
     }
@@ -223,11 +265,13 @@ final class ChatStore {
 
         // Write/Full access need a workspace root; nudge the user to pick one.
         guard selectedFolderPath != nil || selectedPermission == .readOnly else {
+            setTaskStatus(.failed("Folder required"))
             errorCenter.present(.folderRequired()) { [weak self] in self?.presentFolderPicker() }
             return
         }
 
         guard rpc != nil else {
+            setTaskStatus(.failed("Codex unavailable"))
             errorCenter.present(.sidecarCrashed(detail: status)) { [weak self] in self?.restartCodex() }
             return
         }
@@ -246,9 +290,10 @@ final class ChatStore {
     private func startTurn(_ text: String) {
         guard let rpc, !turnRunning else { return }
         lastAttemptedText = text
+        resetTurnCancellation()
         errorCenter.dismissBanner()
         turnRunning = true
-        status = threadId == nil ? "Starting chat…" : "Thinking…"
+        setTaskStatus(threadId == nil ? .creatingThread : .sendingMessage)
 
         Task {
             let threadId: String
@@ -256,24 +301,83 @@ final class ChatStore {
                 threadId = try await ensureThread(rpc)
             } catch {
                 turnRunning = false
-                status = "Couldn’t start the chat."
+                resetTurnCancellation()
+                setTaskStatus(.failed("Couldn’t start the chat"))
                 errorCenter.present(.threadStartFailed(detail: error.localizedDescription)) {
                     [weak self] in self?.startTurn(text)
                 }
                 return
             }
 
+            if turnCancellationRequested {
+                finishCancelledTurn()
+                return
+            }
+
             do {
-                status = "Thinking…"
-                _ = try await rpc.request("turn/start", params: turnStartParams(threadId: threadId, text: text))
+                setTaskStatus(.sendingMessage)
+                let result = try await rpc.request("turn/start", params: turnStartParams(threadId: threadId, text: text))
+                if let turnId = Self.turnId(from: result) {
+                    currentTurnId = turnId
+                }
+                if turnCancellationRequested {
+                    requestTurnInterruptIfPossible()
+                    return
+                }
+                if turnRunning, taskStatus == .sendingMessage {
+                    setTaskStatus(.thinking)
+                }
             } catch {
                 turnRunning = false
-                status = "Message not sent."
+                resetTurnCancellation()
+                setTaskStatus(.failed("Message not sent"))
                 errorCenter.present(Self.turnError(from: error)) {
                     [weak self] in self?.startTurn(text)
                 }
             }
         }
+    }
+
+    func cancelTurn() {
+        guard turnRunning else { return }
+        turnCancellationRequested = true
+        setTaskStatus(.cancelling)
+        requestTurnInterruptIfPossible()
+    }
+
+    private func requestTurnInterruptIfPossible() {
+        guard turnCancellationRequested, !turnInterruptInFlight,
+              let rpc, let threadId, let currentTurnId else {
+            return
+        }
+
+        turnInterruptInFlight = true
+        Task {
+            do {
+                _ = try await rpc.request("turn/interrupt", params: [
+                    "threadId": threadId,
+                    "turnId": currentTurnId,
+                ])
+            } catch {
+                guard turnRunning else { return }
+                turnRunning = false
+                clearPendingMessages()
+                resetTurnCancellation()
+                setTaskStatus(.failed("Couldn’t cancel"))
+                errorCenter.present(.engineError(detail: error.localizedDescription)) {
+                    [weak self] in self?.resendLastTurn()
+                }
+            }
+        }
+    }
+
+    private func finishCancelledTurn() {
+        turnRunning = false
+        clearPendingMessages()
+        resetTurnCancellation()
+        setTaskStatus(.cancelled)
+        persistCurrentChat()
+        saveSession()
     }
 
     /// Re-sends the last turn if it's safe to do so. Backs the banner "Resend".
@@ -300,6 +404,7 @@ final class ChatStore {
 
     private func ensureThread(_ rpc: CodexRPCClient) async throws -> String {
         if let threadId { return threadId }
+        setTaskStatus(.creatingThread)
         let result = try await rpc.request("thread/start", params: threadStartParams())
         guard
             let dict = result as? [String: Any],
@@ -441,15 +546,39 @@ final class ChatStore {
 
     private func handle(method: String, params: [String: Any]?) {
         switch method {
+        case "turn/started":
+            if let turnId = Self.turnId(from: params?["turn"] ?? params) {
+                currentTurnId = turnId
+            }
+            if turnCancellationRequested {
+                requestTurnInterruptIfPossible()
+                return
+            }
+            if turnRunning {
+                setTaskStatus(.thinking)
+            }
+
         case "item/started":
             guard
                 let item = params?["item"] as? [String: Any],
-                item["type"] as? String == "agentMessage",
+                let itemType = item["type"] as? String,
                 let itemId = item["id"] as? String
             else { return }
-            let id = "assistant-\(itemId)"
-            if !messages.contains(where: { $0.id == id }) {
-                messages.append(ChatMessage(id: id, role: .assistant, text: "", pending: true))
+            switch itemType {
+            case "agentMessage":
+                setActiveTurnStatus(.thinking)
+                let id = "assistant-\(itemId)"
+                if !messages.contains(where: { $0.id == id }) {
+                    messages.append(ChatMessage(id: id, role: .assistant, text: "", pending: true))
+                }
+            case "commandExecution":
+                setActiveTurnStatus(.runningCommand)
+            case "fileChange":
+                setActiveTurnStatus(.editingFiles)
+            default:
+                if turnRunning {
+                    setActiveTurnStatus(.thinking)
+                }
             }
 
         case "item/agentMessage/delta":
@@ -457,6 +586,7 @@ final class ChatStore {
                 let itemId = params?["itemId"] as? String,
                 let delta = params?["delta"] as? String
             else { return }
+            setActiveTurnStatus(.streamingResponse)
             let id = "assistant-\(itemId)"
             if let index = messages.firstIndex(where: { $0.id == id }) {
                 messages[index].text += delta
@@ -465,38 +595,98 @@ final class ChatStore {
                 messages.append(ChatMessage(id: id, role: .assistant, text: delta, pending: true))
             }
 
+        case "command/exec/outputDelta",
+            "process/outputDelta",
+             "item/commandExecution/outputDelta",
+             "item/commandExecution/terminalInteraction":
+            if turnRunning {
+                setActiveTurnStatus(.runningCommand)
+            }
+
+        case "turn/diff/updated",
+             "item/fileChange/outputDelta",
+             "item/fileChange/patchUpdated":
+            if turnRunning {
+                setActiveTurnStatus(.editingFiles)
+            }
+
+        case "serverRequest/resolved":
+            if turnRunning, !turnCancellationRequested, taskStatus == .waitingForPermission {
+                setTaskStatus(.thinking)
+            }
+
         case "item/completed":
             guard
                 let item = params?["item"] as? [String: Any],
-                item["type"] as? String == "agentMessage",
+                let itemType = item["type"] as? String,
                 let itemId = item["id"] as? String
             else { return }
-            let id = "assistant-\(itemId)"
-            if let index = messages.firstIndex(where: { $0.id == id }) {
-                messages[index].text = item["text"] as? String ?? messages[index].text
-                messages[index].pending = false
+            if itemType == "agentMessage" {
+                let id = "assistant-\(itemId)"
+                if let index = messages.firstIndex(where: { $0.id == id }) {
+                    messages[index].text = item["text"] as? String ?? messages[index].text
+                    messages[index].pending = false
+                }
+            } else if turnRunning {
+                setActiveTurnStatus(.thinking)
             }
             persistCurrentChat()
             saveSession()
 
         case "turn/completed":
             turnRunning = false
-            status = "Ready."
             clearPendingMessages()
-            if let turn = params?["turn"] as? [String: Any], let error = turn["error"] {
+            let turn = params?["turn"] as? [String: Any]
+            let turnStatus = turn?["status"] as? String
+            let error = turn?["error"]
+            let wasCancelling = turnCancellationRequested
+            resetTurnCancellation()
+            if turnStatus == "interrupted" || (wasCancelling && error == nil) {
+                setTaskStatus(.cancelled)
+                persistCurrentChat()
+                saveSession()
+            } else if let error {
                 presentEngineError(Self.describe(error))
+            } else if turnStatus == "failed" {
+                presentEngineError(Self.describe(turn ?? params ?? [:]))
             } else {
+                setTaskStatus(.completed)
                 persistCurrentChat()
                 saveSession()
             }
 
         case "error":
             turnRunning = false
-            status = "Codex returned an error."
+            resetTurnCancellation()
+            setTaskStatus(.failed("Codex returned an error"))
             presentEngineError(Self.describe(params?["error"] ?? params as Any))
 
         default:
             break
+        }
+    }
+
+    private func handleServerRequest(method: String, started: Bool) {
+        guard turnRunning, !turnCancellationRequested else { return }
+        guard method.contains("requestApproval") || method.contains("permissions/requestApproval") else {
+            return
+        }
+
+        if started {
+            permissionStatusTask?.cancel()
+            permissionStatusTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.turnRunning else { return }
+                    self.setTaskStatus(.waitingForPermission)
+                }
+            }
+        } else if turnRunning, taskStatus == .waitingForPermission {
+            setTaskStatus(.thinking)
+        } else {
+            permissionStatusTask?.cancel()
+            permissionStatusTask = nil
         }
     }
 
@@ -506,6 +696,7 @@ final class ChatStore {
         let error = Self.isPermissionError(detail)
             ? ModexError.permissionDenied(detail: detail)
             : ModexError.engineError(detail: detail)
+        setTaskStatus(.failed(error.title))
         errorCenter.present(error) { [weak self] in self?.resendLastTurn() }
     }
 
@@ -541,6 +732,16 @@ final class ChatStore {
         return "Unknown error."
     }
 
+    private static func turnId(from payload: Any?) -> String? {
+        guard let dict = payload as? [String: Any] else { return nil }
+        if let id = dict["turnId"] as? String { return id }
+        if let id = dict["id"] as? String { return id }
+        if let turn = dict["turn"] as? [String: Any] {
+            return turn["turnId"] as? String ?? turn["id"] as? String
+        }
+        return nil
+    }
+
     func flushPersistence() {
         persistCurrentChat()
         saveSession()
@@ -553,10 +754,11 @@ final class ChatStore {
         let client = rpc
         rpc = nil
         threadId = nil
+        resetTurnCancellation()
         isReady = false
         turnRunning = false
         booted = false
-        status = "Starting Codex…"
+        setTaskStatus(.startingCodex)
         Task { await client?.close() }
         supervisor.stop()
     }
@@ -639,6 +841,7 @@ final class ChatStore {
 
     private func apply(_ chat: PersistedChat) {
         threadId = chat.threadId
+        resetTurnCancellation()
         chatTitle = chat.title
         messages = chat.messages
         selectedModel = availableModels.contains(chat.model) ? chat.model : selectedModel
