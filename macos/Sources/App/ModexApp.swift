@@ -3,6 +3,7 @@ import AppKit
 
 @main
 struct ModexApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store = ChatStore()
     @State private var updates = UpdateStore()
     @State private var windowState = WindowStateStore()
@@ -21,6 +22,11 @@ struct ModexApp: App {
                 .onDisappear {
                     store.shutdown()
                     updates.stop()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .inactive || phase == .background {
+                        store.flushPersistence()
+                    }
                 }
         }
         .windowResizability(.contentMinSize)
