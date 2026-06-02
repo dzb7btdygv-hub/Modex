@@ -4,13 +4,17 @@ struct RootView: View {
     @Environment(UpdateStore.self) private var updates
     @Environment(ChatStore.self) private var store
     @State private var selection: SidebarItem?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(selection: $selection)
                 .navigationSplitViewColumnWidth(min: 224, ideal: 256, max: 320)
         } detail: {
-            ChatPaneView()
+            // When the sidebar is hidden the traffic lights + toggle move into
+            // the detail pane's top-left, so the title bar must drop back below
+            // them rather than ride up into the titlebar strip.
+            ChatPaneView(sidebarCollapsed: columnVisibility == .detailOnly)
         }
         // No window title — the composer owns model and reasoning controls.
         .navigationTitle("")
@@ -38,8 +42,9 @@ struct RootView: View {
                 .font(.system(size: 9, weight: .regular).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .opacity(0.62)
-                .padding(.trailing, 9)
-                .padding(.bottom, 6)
+                // Clear of the window's rounded bottom-right corner.
+                .padding(.trailing, 16)
+                .padding(.bottom, 12)
                 .allowsHitTesting(false)
         }
     }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -9,8 +10,12 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(store.messages) { message in
-                        MessageRow(message: message, activeStatus: activeStatus(for: message))
-                            .id(message.id)
+                        MessageRow(
+                            message: message,
+                            activeStatus: activeStatus(for: message),
+                            isLast: message.id == store.messages.last?.id
+                        )
+                        .id(message.id)
                     }
                     if let status = standaloneActivityStatus {
                         InlineActivityRow(status: status)
@@ -57,20 +62,17 @@ struct ConversationView: View {
 }
 
 private struct MessageRow: View {
+    @Environment(ChatStore.self) private var store
     let message: ChatMessage
     let activeStatus: ChatTaskStatus?
+    /// Whether this is the last message in the conversation — gates the
+    /// "Regenerate" action to the most recent reply.
+    var isLast: Bool = false
 
     var body: some View {
         switch message.role {
         case .user:
-            HStack {
-                Spacer(minLength: 56)
-                Text(message.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.quaternary, in: .rect(cornerRadius: 16))
-            }
+            UserBubble(text: message.text)
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
                 if let thinkingText {
@@ -88,6 +90,15 @@ private struct MessageRow: View {
 
                 if !message.text.isEmpty {
                     AssistantMarkdownText(text: message.text)
+                }
+
+                // Action row under a settled reply (hidden while streaming).
+                if !message.text.isEmpty, !message.pending {
+                    AssistantActionBar(
+                        text: message.text,
+                        canRegenerate: isLast && store.canSend,
+                        onRegenerate: { store.resendLastTurn() }
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,6 +186,9 @@ private struct ThinkingDisclosure: View {
     }
 }
 
+/// Thin wrapper preserving the existing call sites while delegating rendering to
+/// the shared ``MarkdownContent`` engine (headings, lists, quotes, fenced code,
+/// inline styling).
 private struct AssistantMarkdownText: View {
     let text: String
     var foregroundStyle: AnyShapeStyle
@@ -190,77 +204,8 @@ private struct AssistantMarkdownText: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Self.blocks(in: text)) { block in
-                switch block.kind {
-                case .text:
-                    Group {
-                        if let attributed = Self.markdown(block.text) {
-                            Text(attributed)
-                        } else {
-                            Text(block.text)
-                        }
-                    }
-                    .foregroundStyle(foregroundStyle)
-                case .code:
-                    CodeBlock(text: block.text)
-                }
-            }
-        }
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        MarkdownContent(text: text, foregroundStyle: foregroundStyle)
     }
-
-    private static func markdown(_ text: String) -> AttributedString? {
-        try? AttributedString(
-            markdown: text,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
-        )
-    }
-
-    private static func blocks(in text: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        var rest = text[...]
-
-        while let open = rest.range(of: "```") {
-            let before = rest[..<open.lowerBound]
-            if !before.isEmpty {
-                blocks.append(.init(kind: .text, text: String(before)))
-            }
-
-            let afterOpen = rest[open.upperBound...]
-            guard let close = afterOpen.range(of: "```") else {
-                blocks.append(.init(kind: .text, text: String(rest[open.lowerBound...])))
-                return blocks
-            }
-
-            var code = String(afterOpen[..<close.lowerBound])
-            if let newline = code.firstIndex(of: "\n") {
-                let firstLine = code[..<newline].trimmingCharacters(in: .whitespacesAndNewlines)
-                if firstLine.range(of: #"^[A-Za-z0-9_+#.-]+$"#, options: .regularExpression) != nil {
-                    code = String(code[code.index(after: newline)...])
-                }
-            }
-            blocks.append(.init(kind: .code, text: code.trimmingCharacters(in: .newlines)))
-            rest = afterOpen[close.upperBound...]
-        }
-
-        if !rest.isEmpty {
-            blocks.append(.init(kind: .text, text: String(rest)))
-        }
-        return blocks.isEmpty ? [.init(kind: .text, text: text)] : blocks
-    }
-}
-
-private struct MarkdownBlock: Identifiable {
-    enum Kind {
-        case text
-        case code
-    }
-
-    let id = UUID()
-    let kind: Kind
-    let text: String
 }
 
 private struct CodeBlock: View {
@@ -295,5 +240,111 @@ private struct ToolOutputBlock: View {
             CodeBlock(text: text.trimmingCharacters(in: .newlines))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - User message
+
+/// The user's prompt bubble with a copy control that fades in on hover. The
+/// control's space is always reserved so revealing it never shifts layout.
+private struct UserBubble: View {
+    let text: String
+    @State private var hovering = false
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 56)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.quaternary, in: .rect(cornerRadius: 16))
+                MessageCopyButton(text: text)
+                    .opacity(hovering ? 1 : 0)
+                    .allowsHitTesting(hovering)
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.15), value: hovering)
+    }
+}
+
+// MARK: - Assistant actions
+
+/// Persistent action row beneath a settled assistant reply.
+private struct AssistantActionBar: View {
+    let text: String
+    let canRegenerate: Bool
+    let onRegenerate: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            MessageCopyButton(text: text)
+            MessageReportButton()
+            if canRegenerate {
+                ActionIconButton(systemImage: "arrow.clockwise", help: "Regenerate response", action: onRegenerate)
+            }
+        }
+        .padding(.leading, -5) // nudge the glyphs to align under the body text
+    }
+}
+
+/// A report/flag control beneath an assistant reply. Confirms with a filled flag
+/// for a moment. (Not yet wired to a feedback backend.)
+private struct MessageReportButton: View {
+    @State private var reported = false
+
+    var body: some View {
+        ActionIconButton(
+            systemImage: reported ? "flag.fill" : "flag",
+            help: reported ? "Reported" : "Report response"
+        ) {
+            reported = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reported = false }
+        }
+        .animation(.easeInOut(duration: 0.15), value: reported)
+    }
+}
+
+/// A copy-to-clipboard icon that briefly confirms with a checkmark.
+private struct MessageCopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        ActionIconButton(
+            systemImage: copied ? "checkmark" : "doc.on.doc",
+            help: copied ? "Copied" : "Copy"
+        ) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        }
+        .animation(.easeInOut(duration: 0.15), value: copied)
+    }
+}
+
+/// Small secondary icon button sized to a comfortable click target.
+private struct ActionIconButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(hovering ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
+                .contentShape(.rect(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
     }
 }

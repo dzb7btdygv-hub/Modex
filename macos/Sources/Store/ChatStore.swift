@@ -31,9 +31,10 @@ final class ChatStore {
     private(set) var selectedFolderPath: String?
     private(set) var selectedFolderName = "Choose folder"
     private(set) var gitBranch: String?
+    /// Local branches in the active project, for the top-bar branch switcher.
+    private(set) var gitBranches: [String] = []
     private(set) var activeProjectMissing = false
     private(set) var chatTitle = ChatStore.newChatTitle
-    private(set) var recentChats: [RecentChat] = []
     private(set) var selectedChatId: String?
 
     let supervisor = CodexSupervisor()
@@ -59,6 +60,15 @@ final class ChatStore {
     private var chatRecords: [PersistedChat] = []
     private var projectRecords: [Project] = []
     private var selectedProjectId: String?
+    /// Folders the user removed from Modex's sidebar. Kept so re-importing from
+    /// Codex's trusted list doesn't resurrect them on the next launch.
+    private var dismissedProjectPaths: Set<String> = []
+    /// Codex threads keyed by project folder path — loaded per project as its
+    /// row is expanded, so each project unfolds to reveal its own chats.
+    private var threadsByProjectPath: [String: [CodexThreadSummary]] = [:]
+    /// Paths with an in-flight `thread/list` (per-path, so different projects can
+    /// load concurrently and a switch never blocks the next project's fetch).
+    private var loadingProjectPaths: Set<String> = []
 
     var canSend: Bool { isReady && !turnRunning }
 
@@ -69,6 +79,22 @@ final class ChatStore {
               let project = projectRecords.first(where: { $0.id == selectedProjectId }) else { return nil }
         return project.displayName
     }
+
+    /// All known projects, most-recently-opened first. Drives the sidebar's
+    /// Projects list so switching workspaces never loses a project from view.
+    var projects: [ProjectSummary] {
+        // Stable alphabetical order so selecting a project never reshuffles the
+        // list (the active one is shown by tint, not by jumping to the top).
+        projectRecords
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            .map { ProjectSummary(id: $0.id, name: $0.displayName, path: $0.path, isMissing: !$0.folderExists) }
+    }
+
+    /// The active project's id, or `nil` when working without a folder.
+    var activeProjectId: String? { selectedProjectId }
+
+    /// Whether a project/folder is active (vs. a folderless "Chats" context).
+    var isInProject: Bool { selectedProjectId != nil }
 
     private func setTaskStatus(_ taskStatus: ChatTaskStatus) {
         guard self.taskStatus != taskStatus else { return }
@@ -101,6 +127,7 @@ final class ChatStore {
             self?.handleSidecarCrash(code: code)
         }
         restoreSession()
+        importCodexProjects()
     }
 
     // MARK: - Boot
@@ -160,6 +187,7 @@ final class ChatStore {
             }
             isReady = true
             setTaskStatus(.ready)
+            if let id = selectedProjectId { loadProjectThreads(id) }  // active project's history
             logger.log("Codex engine ready (generation \(generation)).")
         } catch let modexError as ModexError {
             guard bootGeneration == generation else { return }
@@ -266,10 +294,15 @@ final class ChatStore {
     }
 
     func selectChat(_ id: String) {
-        guard !turnRunning, id != selectedChatId, let chat = chatRecords.first(where: { $0.id == id }) else {
+        guard !turnRunning, id != selectedChatId else { return }
+
+        // A Codex thread (in any loaded project list) → resume it.
+        if threadsByProjectPath.values.contains(where: { $0.contains { $0.id == id } }) {
+            openCodexThread(id)
             return
         }
 
+        guard let chat = chatRecords.first(where: { $0.id == id }) else { return }
         persistCurrentChat()
         selectedChatId = id
         apply(chat)
@@ -528,7 +561,7 @@ final class ChatStore {
 
         applyProjectDefaults(id)
 
-        if let recent = mostRecentChat(in: id) {
+        if let recent = mostRecentChat(inProject: id) {
             // Reopening a project with history — restore its most recent chat.
             // Checked first so switching back to a project never hijacks the
             // empty scratch chat instead of the real conversation.
@@ -561,6 +594,92 @@ final class ChatStore {
         updateThreadSettingsIfNeeded()
     }
 
+    /// Switches the active project from the sidebar's Projects list. The old
+    /// project and its chats stay on disk — they reappear the moment it's
+    /// re-selected. No-op mid-turn.
+    func switchToProject(_ id: String) {
+        guard !turnRunning, id != selectedProjectId,
+              projectRecords.contains(where: { $0.id == id }) else { return }
+        openProject(id)
+    }
+
+    /// Renames a project's display name (Modex-side; Codex's trust list has no
+    /// project name to sync to).
+    func renameProject(_ id: String, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = projectRecords.firstIndex(where: { $0.id == id }) else { return }
+        projectRecords[index].name = trimmed
+        saveSession()
+    }
+
+    /// Removes a project from the sidebar — like Codex's "remove project", this
+    /// only forgets it here; the folder and its files are untouched. Remembered
+    /// so a Codex re-import won't bring it back. If it was active, detaches to a
+    /// folderless context.
+    func removeProject(_ id: String) {
+        guard let index = projectRecords.firstIndex(where: { $0.id == id }) else { return }
+        let wasActive = selectedProjectId == id
+        if wasActive && turnRunning { return }   // don't yank the active project mid-turn
+
+        dismissedProjectPaths.insert(projectRecords[index].path)
+        projectRecords.remove(at: index)
+
+        if wasActive {
+            selectedProjectId = nil
+            selectedPermission = .readOnly
+            errorCenter.dismissBanner()
+            if isReady { setTaskStatus(.ready) }
+            if let recent = mostRecentChat(inProject: nil) {
+                selectedChatId = recent.id
+                apply(recent)
+            } else {
+                let chat = makeChat()
+                chatRecords.insert(chat, at: 0)
+                selectedChatId = chat.id
+                apply(chat)
+            }
+            updateThreadSettingsIfNeeded()
+        }
+
+        refreshRecentChats()
+        saveSession()
+    }
+
+    /// Leaves the current project to work without a folder. Chats created here
+    /// are projectless and surface under the sidebar's "Chats" section. Drops to
+    /// Read only, since Write/Full access need a workspace root. No-op mid-turn.
+    func closeActiveFolder() {
+        guard !turnRunning, selectedProjectId != nil else { return }
+        persistCurrentChat()
+        selectedProjectId = nil
+        errorCenter.dismissBanner()
+        if isReady { setTaskStatus(.ready) }
+        selectedPermission = .readOnly
+
+        if let recent = mostRecentChat(inProject: nil) {
+            // Resume the most recent folderless chat, if any.
+            selectedChatId = recent.id
+            apply(recent)
+        } else if let index = currentChatIndex,
+                  chatRecords[index].messages.isEmpty, chatRecords[index].threadId == nil {
+            // Fold the current empty canvas into the folderless context.
+            chatRecords[index].projectId = nil
+            chatRecords[index].permission = selectedPermission
+            applySelectedProject()
+        } else {
+            // Active chat belongs to a project — start a fresh folderless one.
+            let chat = makeChat()
+            chatRecords.insert(chat, at: 0)
+            selectedChatId = chat.id
+            apply(chat)
+        }
+
+        refreshRecentChats()
+        saveSession()
+        updateThreadSettingsIfNeeded()
+    }
+
     /// Seeds the composer (access mode, model, reasoning) from a project's
     /// remembered defaults. Used when *opening* a project — never when opening an
     /// existing chat, whose own saved settings win.
@@ -583,9 +702,9 @@ final class ChatStore {
         projectRecords[index].lastReasoning = reasoning
     }
 
-    private func mostRecentChat(in projectId: String) -> PersistedChat? {
+    private func mostRecentChat(inProject id: String?) -> PersistedChat? {
         chatRecords
-            .filter { $0.projectId == projectId }
+            .filter { $0.projectId == id }
             .max { $0.updatedAt < $1.updatedAt }
     }
 
@@ -647,7 +766,7 @@ final class ChatStore {
             return
         }
 
-        let options = Self.deduplicatedModelOptions(loaded)
+        let options = Self.deduplicatedModelOptions(loaded.filter { !Self.isInternalModel(slug: $0.slug) })
         guard !options.isEmpty else { return }
 
         let previous = selectedModel
@@ -682,6 +801,13 @@ final class ChatStore {
         )
     }
 
+    /// Excludes non-chat entries the server lists with `includeHidden` (e.g. the
+    /// internal `codex-auto-review` reviewer) so they never show in the picker.
+    private static func isInternalModel(slug: String) -> Bool {
+        let s = slug.lowercased()
+        return s.contains("auto-review") || s.contains("auto_review")
+    }
+
     private static func deduplicatedModelOptions(_ options: [ModelOption]) -> [ModelOption] {
         var seen = Set<String>()
         var result: [ModelOption] = []
@@ -695,6 +821,32 @@ final class ChatStore {
         }
     }
 
+    /// Modex-specific guidance layered on top of Codex's built-in persona via
+    /// the `developerInstructions` thread param. Teaches the engine the app's
+    /// rendering vocabulary (callouts) and a little about the Modex environment,
+    /// so it can express itself richly. Kept short — it rides every turn.
+    private static let modexDeveloperInstructions = """
+    You are running inside Modex, a native macOS app. Your replies render as \
+    GitHub-flavored Markdown in a chat panel, so use clear structure: short \
+    paragraphs, headings, flat lists, and fenced code blocks with a language tag.
+
+    Modex adds five callout blocks for emphasis. Use them sparingly — only when \
+    they genuinely help — by writing a fenced block whose tag is the callout name, \
+    with an optional short title on the fence line:
+    - `note` — neutral context or an aside
+    - `tip` — a helpful suggestion
+    - `success` — confirm something worked
+    - `warning` — something to be careful about
+    - `danger` — a destructive or high-risk action
+    Example: a fence opening with ```tip Quick tip then the body then a closing \
+    fence. Do not nest callouts or place fenced code inside a callout.
+
+    Environment: the user chooses a project folder and an access mode (Read only, \
+    Write, or Full access) from Modex's UI; you cannot change these yourself, so if \
+    you need write access or a workspace folder, ask the user to set it. Keep \
+    replies concise and skimmable.
+    """
+
     private func threadStartParams() -> [String: Any] {
         var params: [String: Any] = [
             "approvalPolicy": "never",
@@ -702,6 +854,7 @@ final class ChatStore {
             "ephemeral": false,
             "model": selectedModelSlug,
             "serviceName": "modex",
+            "developerInstructions": Self.modexDeveloperInstructions,
         ]
         if let selectedFolderPath {
             params["cwd"] = selectedFolderPath
@@ -816,6 +969,52 @@ final class ChatStore {
             } catch {
                 log.debug("git branch detection failed at \(folder.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 return nil
+            }
+        }.value
+    }
+
+    /// Local branch names in the repo. Best-effort; `[]` on any failure.
+    private static func gitBranches(at folder: URL) async -> [String] {
+        await Task.detached {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", folder.path, "branch", "--format=%(refname:short)"]
+            process.standardOutput = output
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return [] }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                return String(decoding: data, as: UTF8.self)
+                    .split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            } catch {
+                return []
+            }
+        }.value
+    }
+
+    /// Runs `git switch <name>`. Returns success + git's stderr on failure so the
+    /// banner can explain (e.g. uncommitted changes).
+    private static func switchBranch(_ name: String, at folder: URL) async -> (ok: Bool, message: String) {
+        await Task.detached {
+            let process = Process()
+            let errorPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", folder.path, "switch", name]
+            process.standardError = errorPipe
+            process.standardOutput = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 { return (true, "") }
+                let text = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                return (false, text.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch {
+                return (false, error.localizedDescription)
             }
         }.value
     }
@@ -1142,6 +1341,7 @@ final class ChatStore {
         reasoning = stored.reasoning
         selectedPermission = stored.permission
         projectRecords = stored.projects
+        dismissedProjectPaths = Set(stored.dismissedProjectPaths ?? [])
         selectedProjectId = stored.selectedProjectId ?? stored.lastActiveProjectId
         chatRecords = stored.chats.map { chat in
             var restored = chat
@@ -1215,6 +1415,7 @@ final class ChatStore {
             selectedFolderPath = nil
             selectedFolderName = "Choose folder"
             gitBranch = nil
+            gitBranches = []
             activeProjectMissing = false
             return
         }
@@ -1224,6 +1425,7 @@ final class ChatStore {
         activeProjectMissing = !project.folderExists
         // Show the cached branch immediately; refresh in the background.
         gitBranch = project.cachedGitBranch
+        gitBranches = []
 
         // A missing folder can't be a git repo — skip the probe and keep the
         // warning visible.
@@ -1236,6 +1438,27 @@ final class ChatStore {
             guard self.selectedProjectId == projectId else { return }
             gitBranch = branch
             cacheGitBranch(branch, for: projectId)
+            let branches = await Self.gitBranches(at: folder)
+            guard self.selectedProjectId == projectId else { return }
+            gitBranches = branches
+        }
+    }
+
+    /// Checks out a different branch in the active project. Non-destructive: git
+    /// refuses a switch that would lose changes, and we surface that as a banner.
+    func switchGitBranch(_ name: String) {
+        guard let folderPath = selectedFolderPath, let projectId = selectedProjectId, name != gitBranch else { return }
+        let folder = URL(fileURLWithPath: folderPath)
+        Task {
+            let (ok, message) = await Self.switchBranch(name, at: folder)
+            guard self.selectedProjectId == projectId else { return }
+            if ok {
+                gitBranch = name
+                cacheGitBranch(name, for: projectId)
+                gitBranches = await Self.gitBranches(at: folder)
+            } else {
+                errorCenter.present(.gitSwitchFailed(detail: message))
+            }
         }
     }
 
@@ -1292,14 +1515,241 @@ final class ChatStore {
         return project.id
     }
 
+    // MARK: - Codex integration
+
+    /// Seeds Modex's project list from Codex's trusted folders
+    /// (`~/.codex/config.toml`), so projects you already work on in Codex show
+    /// up here. Idempotent: dedupes by path and skips folders gone from disk.
+    private func importCodexProjects() {
+        let known = Set(projectRecords.map(\.path))
+        let epoch = Date(timeIntervalSince1970: 0) // unopened-in-Modex → sorts below real recents
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        // Codex auto-creates a dated working dir per conversation here; those are
+        // not durable projects, so they'd just be noise in the list.
+        let scratchRoot = home + "/Documents/Codex/"
+        var added = false
+
+        for rawPath in Self.codexTrustedProjectPaths() {
+            let url = URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().standardizedFileURL
+            let path = url.path
+            guard !known.contains(path),
+                  !projectRecords.contains(where: { $0.path == path }),
+                  !dismissedProjectPaths.contains(path),  // user removed it — don't resurrect
+                  FileManager.default.fileExists(atPath: path),
+                  path != home,                    // the whole home dir isn't a project
+                  !path.hasPrefix(scratchRoot)      // skip per-conversation scratch dirs
+            else { continue }
+
+            let name = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
+            projectRecords.append(Project(
+                id: UUID().uuidString,
+                name: name,
+                path: path,
+                createdAt: epoch,
+                lastOpenedAt: epoch
+            ))
+            added = true
+        }
+
+        if added { saveSession() }
+    }
+
+    /// Parses `~/.codex/config.toml` for `[projects."<path>"]` tables marked
+    /// `trust_level = "trusted"`. Hand-rolled (no TOML dependency) and tolerant:
+    /// any parse miss just yields fewer paths, never a throw.
+    private static func codexTrustedProjectPaths() -> [String] {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/config.toml")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+
+        var paths: [String] = []
+        var pendingPath: String?
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                // A new table header — only [projects."..."] arms a candidate.
+                pendingPath = projectTableHeaderPath(line)
+            } else if let path = pendingPath,
+                      line.replacingOccurrences(of: " ", with: "").lowercased().hasPrefix("trust_level=\"trusted\"") {
+                paths.append(path)
+                pendingPath = nil
+            }
+        }
+        return paths
+    }
+
+    /// Extracts `<path>` from a `[projects."<path>"]` TOML header, or nil.
+    private static func projectTableHeaderPath(_ line: String) -> String? {
+        guard line.hasPrefix("[projects.\""), let open = line.range(of: "\"") else { return nil }
+        let rest = line[open.upperBound...]
+        guard let close = rest.range(of: "\"") else { return nil }
+        return String(rest[..<close.lowerBound])
+    }
+
+    /// Opens a Codex thread as the live conversation by resuming it — history is
+    /// loaded and subsequent turns continue the same thread.
+    private func openCodexThread(_ id: String) {
+        guard let rpc else { return }
+        persistCurrentChat()
+        Task {
+            do {
+                let result = try await rpc.request("thread/resume", params: ["threadId": id]) as? [String: Any]
+                guard let result, let thread = result["thread"] as? [String: Any] else {
+                    if isReady { setTaskStatus(.ready) }
+                    return
+                }
+                threadId = id
+                selectedChatId = id
+                resetTurnCancellation()
+                messages = Self.messages(fromThread: thread)
+                chatTitle = Self.threadTitle(thread)
+                if let model = result["model"] as? String, let label = canonicalModelLabel(for: model) {
+                    selectedModel = label
+                }
+                if let effort = result["reasoningEffort"] as? String, let level = ReasoningEffort(rawValue: effort) {
+                    reasoning = level
+                }
+                if isReady { setTaskStatus(.ready) }
+                refreshRecentChats()
+                saveSession()
+            } catch {
+                if isReady { setTaskStatus(.ready) }
+                errorCenter.present(.threadStartFailed(detail: error.localizedDescription)) {
+                    [weak self] in self?.openCodexThread(id)
+                }
+            }
+        }
+    }
+
+    private static func threadSummary(_ thread: [String: Any]) -> CodexThreadSummary? {
+        guard let id = thread["id"] as? String, !id.isEmpty else { return nil }
+        let updatedAt: Date = {
+            if let seconds = thread["updatedAt"] as? Double { return Date(timeIntervalSince1970: seconds) }
+            if let seconds = thread["updatedAt"] as? Int { return Date(timeIntervalSince1970: Double(seconds)) }
+            return Date(timeIntervalSince1970: 0)
+        }()
+        return CodexThreadSummary(id: id, title: threadTitle(thread), updatedAt: updatedAt)
+    }
+
+    private static func threadTitle(_ thread: [String: Any]) -> String {
+        if let name = (thread["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        if let preview = thread["preview"] as? String, let title = generatedTitle(from: preview) {
+            return title
+        }
+        return untitledChatTitle
+    }
+
+    /// Flattens a resumed thread's turns into displayable messages. Keeps the
+    /// readable user/assistant exchange; transient detail (reasoning, command
+    /// output) is left out of restored history.
+    private static func messages(fromThread thread: [String: Any]) -> [ChatMessage] {
+        guard let turns = thread["turns"] as? [[String: Any]] else { return [] }
+        var result: [ChatMessage] = []
+        for turn in turns {
+            for item in (turn["items"] as? [[String: Any]]) ?? [] {
+                guard let type = item["type"] as? String, let itemId = item["id"] as? String else { continue }
+                switch type {
+                case "userMessage":
+                    let text = ((item["content"] as? [[String: Any]]) ?? [])
+                        .compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+                        .joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty { result.append(ChatMessage(id: "u-\(itemId)", role: .user, text: text)) }
+                case "agentMessage":
+                    let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty { result.append(ChatMessage(id: "a-\(itemId)", role: .assistant, text: text)) }
+                default:
+                    break
+                }
+            }
+        }
+        return result
+    }
+
     /// Recent chats scoped to the active project. Chats with no project (e.g.
     /// Read-only sessions started without a folder) surface only when no project
     /// is active, so a chat is always grouped under the workspace it belongs to.
+    /// Kicks a refresh of the active project's threads after state changes
+    /// (sends, opens). Per-project lists are computed, so nothing else to rebuild.
     private func refreshRecentChats() {
-        recentChats = chatRecords
-            .filter { $0.projectId == selectedProjectId }
+        if let id = selectedProjectId { loadProjectThreads(id) }
+    }
+
+    /// Chats shown nested under a project when it's unfolded — its Codex threads,
+    /// plus the active project's current unsent draft pinned on top.
+    func projectChats(_ projectId: String) -> [RecentChat] {
+        guard let project = projectRecords.first(where: { $0.id == projectId }) else { return [] }
+        var rows = (threadsByProjectPath[project.path] ?? [])
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { RecentChat(id: $0.id, title: $0.title, timeAgo: Self.timeAgo(from: $0.updatedAt)) }
+        if projectId == selectedProjectId, threadId == nil, messages.isEmpty, let draftId = selectedChatId,
+           !rows.contains(where: { $0.id == draftId }) {
+            rows.insert(RecentChat(id: draftId, title: chatTitle, timeAgo: "Just now"), at: 0)
+        }
+        return rows
+    }
+
+    /// Chats made without a folder (the folderless "Chats" section). Local-only;
+    /// Codex's folderless threads aren't surfaced (their cwd is ambiguous).
+    var folderlessChats: [RecentChat] {
+        chatRecords
+            .filter { $0.projectId == nil }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .map { RecentChat(id: $0.id, title: $0.title, timeAgo: Self.timeAgo(from: $0.updatedAt)) }
+    }
+
+    /// Whether to show the folderless "Chats" section at all.
+    var showFolderlessChats: Bool { !isInProject || !folderlessChats.isEmpty }
+
+    /// Loads a project's Codex threads (by folder). Per-path in-flight guard lets
+    /// projects load independently; a failed fetch keeps any cached list.
+    func loadProjectThreads(_ projectId: String) {
+        guard isReady, let rpc,
+              let project = projectRecords.first(where: { $0.id == projectId }),
+              project.folderExists,
+              !loadingProjectPaths.contains(project.path) else { return }
+        let path = project.path
+        loadingProjectPaths.insert(path)
+        Task {
+            let result = try? await rpc.request("thread/list", params: [
+                "cwd": path,
+                "limit": 100,
+                "useStateDbOnly": true,
+            ]) as? [String: Any]
+            loadingProjectPaths.remove(path)
+            guard let result else { return }   // failed — keep cached list
+            let data = result["data"] as? [[String: Any]] ?? []
+            threadsByProjectPath[path] = data.compactMap(Self.threadSummary)
+        }
+    }
+
+    /// Opens a chat under a project — switching the active project first if the
+    /// chat belongs to a different one, then resuming the thread.
+    func openProjectChat(projectId: String, threadId id: String) {
+        guard !turnRunning, id != selectedChatId else { return }
+        if projectId != selectedProjectId, projectRecords.contains(where: { $0.id == projectId }) {
+            persistCurrentChat()
+            selectedProjectId = projectId
+            applyProjectDefaults(projectId)
+            applySelectedProject()
+            if let index = projectRecords.firstIndex(where: { $0.id == projectId }) {
+                projectRecords[index].lastOpenedAt = Date()
+            }
+            saveSession()
+        }
+        openCodexThread(id)
+    }
+
+    /// Starts a fresh chat in a specific project (used by the per-project
+    /// "New chat" row), switching to it first if needed.
+    func startNewChatInProject(_ projectId: String) {
+        guard !turnRunning else { return }
+        if projectId != selectedProjectId { switchToProject(projectId) }
+        startNewChat()
     }
 
     private func saveSession() {
@@ -1316,6 +1766,7 @@ final class ChatStore {
             reasoning: reasoning,
             permission: selectedPermission,
             projects: projectRecords,
+            dismissedProjectPaths: dismissedProjectPaths.isEmpty ? nil : Array(dismissedProjectPaths),
             chats: chatRecords.sorted { $0.updatedAt > $1.updatedAt }
         )
     }
@@ -1332,6 +1783,22 @@ final class ChatStore {
     }
 }
 
+/// A row in the sidebar's Projects list.
+struct ProjectSummary: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let path: String
+    /// Backing folder no longer exists on disk — shown with a warning glyph.
+    let isMissing: Bool
+}
+
+/// A Codex thread surfaced as a chat in the sidebar.
+struct CodexThreadSummary: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let updatedAt: Date
+}
+
 private struct PersistedSession: Codable {
     var version: Int
     var selectedChatId: String?
@@ -1341,6 +1808,9 @@ private struct PersistedSession: Codable {
     var reasoning: ReasoningEffort
     var permission: PermissionMode
     var projects: [Project]
+    /// Optional (added later) — folders the user removed from the sidebar.
+    /// Decodes to nil for sessions written before this field existed.
+    var dismissedProjectPaths: [String]?
     var chats: [PersistedChat]
 }
 

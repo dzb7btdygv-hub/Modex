@@ -33,9 +33,7 @@ struct TopChatBarView: View {
                     .help("This project's folder is missing — choose it again")
                     .accessibilityLabel("Project folder missing, choose again")
                 } else if let gitBranch = store.gitBranch {
-                    TopBarPillLabel(systemImage: "point.3.connected.trianglepath.dotted", title: gitBranch)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel("Git branch, \(gitBranch)")
+                    BranchMenu(current: gitBranch, branches: store.gitBranches) { store.switchGitBranch($0) }
                 }
 
                 Spacer(minLength: 0)
@@ -43,7 +41,8 @@ struct TopChatBarView: View {
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 28)
-            .padding(.vertical, 8)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
             Rectangle()
                 .fill(Color(nsColor: .separatorColor).opacity(0.58))
@@ -51,6 +50,39 @@ struct TopChatBarView: View {
                 .padding(.horizontal, 28)
         }
         .background(ModexDetailSurface().opacity(0.58))
+    }
+}
+
+/// The git-branch pill, now a switcher: lists local branches and checks one out.
+private struct BranchMenu: View {
+    let current: String
+    let branches: [String]
+    let onSwitch: (String) -> Void
+
+    private var options: [String] { branches.isEmpty ? [current] : branches }
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { branch in
+                Button {
+                    if branch != current { onSwitch(branch) }
+                } label: {
+                    if branch == current {
+                        Label(branch, systemImage: "checkmark")
+                    } else {
+                        Text(branch)
+                    }
+                }
+            }
+        } label: {
+            TopBarPillLabel(systemImage: "point.3.connected.trianglepath.dotted", title: current, showsChevron: true)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Switch branch")
+        .accessibilityLabel("Git branch, \(current)")
     }
 }
 
@@ -101,12 +133,14 @@ private struct TopBarPillLabel: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .frame(height: 28)
-        .background(hovering ? Color.primary.opacity(0.06) : Color.primary.opacity(0.025), in: .rect(cornerRadius: 7))
+        .background(hovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.025), in: .rect(cornerRadius: 7))
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Color.primary.opacity(hovering ? 0.16 : 0.10), lineWidth: 0.75)
+                .strokeBorder(Color.primary.opacity(hovering ? 0.18 : 0.10), lineWidth: 0.75)
         )
         .contentShape(.rect(cornerRadius: 7))
+        .scaleEffect(hovering ? 1.03 : 1.0)
         .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.15), value: hovering)
     }
 }

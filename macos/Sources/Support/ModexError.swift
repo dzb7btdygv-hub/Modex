@@ -34,6 +34,7 @@ struct ModexError: Identifiable, Error {
         case updateInstallFailed
         case sessionDataCorrupt
         case engineError
+        case gitSwitchFailed
     }
 
     let id = UUID()
@@ -267,6 +268,19 @@ extension ModexError {
             severity: .error,
             isRetryable: true,
             retryLabel: "Resend"
+        )
+    }
+
+    static func gitSwitchFailed(detail: String?) -> ModexError {
+        ModexError(
+            kind: .gitSwitchFailed,
+            title: "Couldn’t switch branch",
+            explanation: "Git wouldn’t switch branches — there may be uncommitted changes that conflict.",
+            suggestedAction: "Commit or stash your changes, then try again.",
+            technicalDetail: trimmed(detail),
+            severity: .warning,
+            isRetryable: false,
+            retryLabel: nil
         )
     }
 }

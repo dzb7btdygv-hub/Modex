@@ -58,8 +58,8 @@ struct PromptDockView: View {
                     action: store.turnRunning ? store.cancelTurn : submit
                 )
             }
-            .padding(.leading, 9)
-            .padding(.trailing, 7)
+            .padding(.leading, 10)
+            .padding(.trailing, 10)
             .padding(.vertical, 6)
             .frame(minHeight: 42)
             .glassEffect(.regular, in: .rect(cornerRadius: 21))
@@ -275,7 +275,9 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.font = .preferredFont(forTextStyle: .body, options: [:])
         textView.textColor = .labelColor
         textView.insertionPointColor = .labelColor
-        textView.textContainerInset = NSSize(width: 0, height: 5)
+        // Symmetric inset large enough that a single line fills the min height,
+        // so the text sits vertically centred rather than riding high.
+        textView.textContainerInset = NSSize(width: 0, height: 7)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.isHorizontallyResizable = false

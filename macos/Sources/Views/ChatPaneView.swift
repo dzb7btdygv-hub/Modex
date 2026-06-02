@@ -3,6 +3,12 @@ import SwiftUI
 struct ChatPaneView: View {
     @Environment(ChatStore.self) private var store
     @Environment(ErrorCenter.self) private var errors
+    /// Whether the sidebar is collapsed — when it is, the window controls sit in
+    /// this pane, so the top bar must not ride up under them.
+    var sidebarCollapsed: Bool = false
+    /// Live height of the composer (incl. its padding), measured so the
+    /// conversation can fade out exactly where the selector pills float.
+    @State private var composerHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,6 +22,10 @@ struct ChatPaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ModexDetailSurface().ignoresSafeArea())
+        // Let the title/folder bar ride up into the transparent titlebar strip
+        // instead of sitting below it — but only while the sidebar is showing,
+        // since collapsing it puts the traffic lights + toggle in this column.
+        .ignoresSafeArea(.container, edges: sidebarCollapsed ? [] : .top)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // Hide the composer behind the fatal recovery screen — there's
             // nothing to send until the engine is back.
@@ -23,6 +33,7 @@ struct ChatPaneView: View {
                 composer
             }
         }
+        .onPreferenceChange(ComposerHeightKey.self) { composerHeight = $0 }
     }
 
     @ViewBuilder
@@ -46,7 +57,21 @@ struct ChatPaneView: View {
         } else if store.messages.isEmpty {
             emptyState
         } else {
+            // Fade the conversation to transparent across the composer band so
+            // user/assistant text dissolves before it slides behind the
+            // (background-less) permission · model · reasoning pills.
             ConversationView()
+                .mask {
+                    VStack(spacing: 0) {
+                        Rectangle().fill(Color.black)
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.black, Color.clear]),
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: max(0, composerHeight + 12))
+                    }
+                }
         }
     }
 
@@ -78,5 +103,18 @@ struct ChatPaneView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 18)
             .padding(.top, 8)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ComposerHeightKey.self, value: proxy.size.height)
+                }
+            )
+    }
+}
+
+/// Reports the composer's laid-out height so the conversation fade can track it.
+private struct ComposerHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
