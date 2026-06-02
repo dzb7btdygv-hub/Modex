@@ -39,3 +39,25 @@ targets:
         INFOPLIST_KEY_NSMainNibFile: ""
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         ENABLE_APP_SANDBOX: "NO"
+
+  ModexTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Modex
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.modex.desktop.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  Modex:
+    build:
+      targets:
+        Modex: all
+    test:
+      targets:
+        - ModexTests

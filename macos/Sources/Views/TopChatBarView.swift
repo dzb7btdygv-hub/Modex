@@ -5,48 +5,45 @@ struct TopChatBarView: View {
     @Environment(ChatStore.self) private var store
 
     var body: some View {
-        VStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
                 Text(store.chatTitle)
                     .font(.headline.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
+                    .layoutPriority(1)
 
-                HStack(spacing: 8) {
+                Button {
+                    store.presentFolderPicker()
+                } label: {
+                    TopBarPillLabel(systemImage: "folder", title: store.selectedFolderName, showsChevron: true)
+                }
+                .buttonStyle(.plain)
+                .help("Choose project folder")
+                .accessibilityLabel("Choose project folder")
+                .accessibilityValue(store.selectedFolderPath ?? "No folder selected")
+
+                if store.activeProjectMissing {
                     Button {
                         store.presentFolderPicker()
                     } label: {
-                        TopBarPillLabel(systemImage: "folder", title: store.selectedFolderName, showsChevron: true)
+                        FolderMissingPill()
                     }
                     .buttonStyle(.plain)
-                    .help("Choose project folder")
-                    .accessibilityLabel("Choose project folder")
-                    .accessibilityValue(store.selectedFolderPath ?? "No folder selected")
-
-                    if store.activeProjectMissing {
-                        Button {
-                            store.presentFolderPicker()
-                        } label: {
-                            FolderMissingPill()
-                        }
-                        .buttonStyle(.plain)
-                        .help("This project's folder is missing — choose it again")
-                        .accessibilityLabel("Project folder missing, choose again")
-                    } else if let gitBranch = store.gitBranch {
-                        TopBarPillLabel(systemImage: "point.3.connected.trianglepath.dotted", title: gitBranch)
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel("Git branch, \(gitBranch)")
-                    }
-
-                    Spacer(minLength: 8)
-
-                    TaskStatusLabel(status: store.taskStatus)
+                    .help("This project's folder is missing — choose it again")
+                    .accessibilityLabel("Project folder missing, choose again")
+                } else if let gitBranch = store.gitBranch {
+                    TopBarPillLabel(systemImage: "point.3.connected.trianglepath.dotted", title: gitBranch)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Git branch, \(gitBranch)")
                 }
+
+                Spacer(minLength: 0)
             }
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 28)
-            .padding(.top, 10)
+            .padding(.vertical, 8)
 
             Rectangle()
                 .fill(Color(nsColor: .separatorColor).opacity(0.58))
@@ -54,33 +51,6 @@ struct TopChatBarView: View {
                 .padding(.horizontal, 28)
         }
         .background(ModexDetailSurface().opacity(0.58))
-    }
-}
-
-private struct TaskStatusLabel: View {
-    let status: ChatTaskStatus
-
-    private var tint: Color {
-        switch status.tint {
-        case .secondary: return .secondary
-        case .success: return .green
-        case .warning: return .orange
-        case .danger: return .red
-        }
-    }
-
-    var body: some View {
-        Text(status.label)
-            .font(.caption.weight(.semibold))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .foregroundStyle(tint)
-            .contentTransition(.opacity)
-            .shimmering(active: status.isActive)
-            .frame(maxWidth: 220, alignment: .trailing)
-            .animation(.smooth(duration: 0.25), value: status.label)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Status, \(status.label)")
     }
 }
 

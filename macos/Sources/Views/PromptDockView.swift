@@ -19,14 +19,14 @@ struct PromptDockView: View {
             selectorRow
             .padding(.horizontal, 4)
 
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 Button {
                     // Attach context.
                 } label: {
                     Image(systemName: "plus")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 32, height: 32)
+                        .frame(width: 30, height: 30)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -48,7 +48,8 @@ struct PromptDockView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .frame(height: textHeight)
+                .frame(minHeight: 30)
+                .frame(height: textHeight, alignment: .center)
 
                 SendButton(
                     active: hasText,
@@ -57,14 +58,16 @@ struct PromptDockView: View {
                     action: store.turnRunning ? store.cancelTurn : submit
                 )
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            .padding(.leading, 9)
+            .padding(.trailing, 7)
+            .padding(.vertical, 6)
+            .frame(minHeight: 42)
+            .glassEffect(.regular, in: .rect(cornerRadius: 21))
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 21, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), lineWidth: 0.75)
             )
-            .contentShape(.rect(cornerRadius: 22))
+            .contentShape(.rect(cornerRadius: 21))
         }
     }
 
@@ -137,9 +140,9 @@ private struct SendButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: isRunning ? "stop.fill" : "arrow.up")
-                .font(.body.weight(.bold))
+                .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(filled ? Color.white : Color.secondary)
-                .frame(width: 32, height: 32)
+                .frame(width: 30, height: 30)
                 .background(Circle().fill(pink).opacity(filled ? 1 : 0))
                 .background(Color.clear.glassEffect(.regular, in: Circle()))
         }
@@ -248,7 +251,7 @@ private struct ComposerTextView: NSViewRepresentable {
     let isEnabled: Bool
     let onSubmit: () -> Void
 
-    private let minHeight: CGFloat = 32
+    private let minHeight: CGFloat = 30
     private let maxHeight: CGFloat = 154
 
     func makeCoordinator() -> Coordinator {
@@ -272,7 +275,7 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.font = .preferredFont(forTextStyle: .body, options: [:])
         textView.textColor = .labelColor
         textView.insertionPointColor = .labelColor
-        textView.textContainerInset = NSSize(width: 0, height: 6)
+        textView.textContainerInset = NSSize(width: 0, height: 5)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.isHorizontallyResizable = false

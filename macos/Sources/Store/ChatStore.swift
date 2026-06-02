@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 @Observable
 final class ChatStore {
     private static let newChatTitle = "New Chat"
+    private static let untitledChatTitle = "Untitled Chat"
 
     private(set) var messages: [ChatMessage] = []
     private(set) var status: String = "Starting Codex…"
@@ -22,9 +23,9 @@ final class ChatStore {
     /// User-facing model label. This is the canonical value persisted per chat /
     /// project; it is translated to a wire ``selectedModelSlug`` before being
     /// sent to Codex.
-    var selectedModel = ChatStore.modelCatalog[0].label
+    var selectedModel = ChatStore.fallbackModelCatalog[0].label
     /// Labels shown in the model picker.
-    var availableModels: [String] { Self.modelCatalog.map(\.label) }
+    var availableModels: [String] { modelOptions.map(\.label) }
     var reasoning: ReasoningEffort = .high
     private(set) var selectedPermission: PermissionMode = .readOnly
     private(set) var selectedFolderPath: String?
@@ -52,6 +53,9 @@ final class ChatStore {
     private var permissionStatusTask: Task<Void, Never>?
     private var turnCancellationRequested = false
     private var turnInterruptInFlight = false
+    private var activeAssistantMessageId: String?
+    private var assistantMessageIdsByItemId: [String: String] = [:]
+    private var modelOptions = ChatStore.fallbackModelCatalog
     private var chatRecords: [PersistedChat] = []
     private var projectRecords: [Project] = []
     private var selectedProjectId: String?
@@ -87,6 +91,8 @@ final class ChatStore {
         currentTurnId = nil
         turnCancellationRequested = false
         turnInterruptInFlight = false
+        activeAssistantMessageId = nil
+        assistantMessageIdsByItemId.removeAll()
     }
 
     init(errors: ErrorCenter) {
@@ -136,6 +142,7 @@ final class ChatStore {
                     "clientInfo": ["name": "modex", "title": "Modex", "version": "0.1.0"],
                     "capabilities": ["experimentalApi": true, "requestAttestation": false],
                 ])
+                await loadModelCatalog(client)
             } catch {
                 // Distinguish a dropped connection from a rejected handshake.
                 let detail = error.localizedDescription
@@ -465,7 +472,7 @@ final class ChatStore {
     }
 
     func selectModel(_ model: String) {
-        selectedModel = Self.canonicalModelLabel(for: model) ?? model
+        selectedModel = canonicalModelLabel(for: model) ?? model
         persistCurrentChat()
         rememberActiveProjectDefaults()
         saveSession()
@@ -560,7 +567,7 @@ final class ChatStore {
     private func applyProjectDefaults(_ id: String) {
         guard let project = projectRecords.first(where: { $0.id == id }) else { return }
         selectedPermission = project.defaultPermission
-        if let model = project.lastModel, let label = Self.canonicalModelLabel(for: model) {
+        if let model = project.lastModel, let label = canonicalModelLabel(for: model) {
             selectedModel = label
         }
         reasoning = project.lastReasoning
@@ -592,24 +599,100 @@ final class ChatStore {
         let label: String
         let slug: String
         var aliases: [String] = []
+        var isDefault = false
     }
 
-    /// Slugs sourced from the bundled Codex engine's visible model cache.
-    private static let modelCatalog: [ModelOption] = [
-        ModelOption(label: "GPT-5.5", slug: "gpt-5.5"),
-        ModelOption(label: "GPT-5.4", slug: "gpt-5.4"),
+    private static let fallbackModelCatalog: [ModelOption] = [
+        ModelOption(label: "GPT-5.5", slug: "gpt-5.5", aliases: ["gpt-5-5", "gpt-5.5-pro", "gpt-5p5"]),
+        ModelOption(label: "GPT-5.4", slug: "gpt-5.4", aliases: ["gpt-5-4"]),
         ModelOption(label: "GPT-5.4-Mini", slug: "gpt-5.4-mini", aliases: ["GPT-5.4 Mini", "GPT-5 mini"]),
-        ModelOption(label: "GPT-5.3-Codex-Spark", slug: "gpt-5.3-codex-spark", aliases: ["GPT-5.3 Codex", "GPT-5.5 Codex"]),
+        ModelOption(label: "GPT-5.3-Codex", slug: "gpt-5.3-codex", aliases: ["GPT-5.3 Codex", "GPT-5.3-Codex-Spark", "gpt-5.3-codex-spark"]),
     ]
 
-    private static func canonicalModelLabel(for value: String) -> String? {
-        modelCatalog.first { option in
+    private func canonicalModelLabel(for value: String) -> String? {
+        Self.canonicalModelLabel(for: value, in: modelOptions)
+            ?? Self.canonicalModelLabel(for: value, in: Self.fallbackModelCatalog)
+    }
+
+    private static func canonicalModelLabel(for value: String, in catalog: [ModelOption]) -> String? {
+        catalog.first { option in
             option.label == value || option.slug == value || option.aliases.contains(value)
         }?.label
     }
 
     private var selectedModelSlug: String {
-        Self.modelCatalog.first { $0.label == selectedModel }?.slug ?? Self.modelCatalog[0].slug
+        modelOptions.first { $0.label == selectedModel }?.slug
+            ?? Self.fallbackModelCatalog.first { $0.label == selectedModel }?.slug
+            ?? selectedModel
+    }
+
+    private func loadModelCatalog(_ rpc: CodexRPCClient) async {
+        var loaded: [ModelOption] = []
+        var cursor: String?
+
+        do {
+            repeat {
+                var params: [String: Any] = ["includeHidden": true, "limit": 100]
+                if let cursor { params["cursor"] = cursor }
+                guard let result = try await rpc.request("model/list", params: params) as? [String: Any] else {
+                    break
+                }
+
+                let models = result["data"] as? [[String: Any]] ?? []
+                loaded.append(contentsOf: models.compactMap(Self.modelOption))
+                cursor = result["nextCursor"] as? String
+            } while cursor != nil
+        } catch {
+            logger.error("Could not load Codex model catalog: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        let options = Self.deduplicatedModelOptions(loaded)
+        guard !options.isEmpty else { return }
+
+        let previous = selectedModel
+        modelOptions = options
+        if let label = canonicalModelLabel(for: previous) {
+            selectedModel = label
+        } else if let defaultOption = options.first(where: \.isDefault) {
+            selectedModel = defaultOption.label
+        } else {
+            selectedModel = options[0].label
+        }
+    }
+
+    private static func modelOption(from model: [String: Any]) -> ModelOption? {
+        guard
+            let slug = (model["model"] as? String) ?? (model["id"] as? String),
+            !slug.isEmpty
+        else { return nil }
+
+        let label = (model["displayName"] as? String)
+            ?? (model["id"] as? String)
+            ?? slug
+        var aliases = [slug]
+        if let id = model["id"] as? String, id != slug {
+            aliases.append(id)
+        }
+        return ModelOption(
+            label: label,
+            slug: slug,
+            aliases: aliases,
+            isDefault: model["isDefault"] as? Bool ?? false
+        )
+    }
+
+    private static func deduplicatedModelOptions(_ options: [ModelOption]) -> [ModelOption] {
+        var seen = Set<String>()
+        var result: [ModelOption] = []
+        for option in options {
+            guard seen.insert(option.slug).inserted else { continue }
+            result.append(option)
+        }
+        return result.sorted {
+            if $0.isDefault != $1.isDefault { return $0.isDefault }
+            return $0.label.localizedStandardCompare($1.label) == .orderedAscending
+        }
     }
 
     private func threadStartParams() -> [String: Any] {
@@ -662,8 +745,49 @@ final class ChatStore {
 
     private func updateTitleIfNeeded(from text: String) {
         guard chatTitle == Self.newChatTitle else { return }
-        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-        chatTitle = firstLine.count > 54 ? "\(firstLine.prefix(51))..." : firstLine
+        chatTitle = Self.generatedTitle(from: text) ?? Self.untitledChatTitle
+    }
+
+    static func generatedTitle(from text: String) -> String? {
+        var title = text
+            .replacingOccurrences(of: "```[\\s\\S]*?```", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "`([^`]+)`", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "\\[([^\\]]+)\\]\\([^\\)]+\\)", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "[*#>]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !title.isEmpty else { return nil }
+
+        if let sentenceEnd = title.range(of: "[.?!;:]\\s+", options: .regularExpression) {
+            let candidate = String(title[..<sentenceEnd.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.count >= 8 { title = candidate }
+        }
+
+        let prefixes = [
+            "can you ", "could you ", "would you ", "please ", "pls ",
+            "help me with ", "help me ", "help with ", "help ", "i need to ", "i want to ", "i'd like to ",
+            "id like to ", "can we ", "could we ", "make it so "
+        ]
+        while let prefix = prefixes.first(where: { title.lowercased().hasPrefix($0) }) {
+            title.removeFirst(prefix.count)
+        }
+
+        let noiseWords: Set<String> = ["a", "an", "the", "this", "that", "these", "those", "issue", "problem"]
+        var words = title
+            .split(separator: " ")
+            .map { String($0).trimmingCharacters(in: .punctuationCharacters) }
+            .filter { !$0.isEmpty }
+            .filter { !noiseWords.contains($0.lowercased()) }
+
+        guard words.contains(where: { $0.rangeOfCharacter(from: .alphanumerics) != nil }) else { return nil }
+
+        if words.count > 7 { words = Array(words.prefix(7)) }
+        title = words.joined(separator: " ")
+        if title.count > 50 {
+            title = String(title.prefix(50)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return title.isEmpty ? nil : title
     }
 
     /// Best-effort current git branch. Always non-fatal: any failure (not a
@@ -721,10 +845,10 @@ final class ChatStore {
             switch itemType {
             case "agentMessage":
                 setActiveTurnStatus(.thinking)
-                let id = "assistant-\(itemId)"
-                if !messages.contains(where: { $0.id == id }) {
-                    messages.append(ChatMessage(id: id, role: .assistant, text: "", pending: true))
-                }
+                _ = ensureAssistantMessage(for: itemId)
+            case "reasoning":
+                setActiveTurnStatus(.thinking)
+                _ = ensureAssistantMessage(for: itemId)
             case "commandExecution":
                 setActiveTurnStatus(.runningCommand)
             case "fileChange":
@@ -741,13 +865,21 @@ final class ChatStore {
                 let delta = params?["delta"] as? String
             else { return }
             setActiveTurnStatus(.streamingResponse)
-            let id = "assistant-\(itemId)"
-            if let index = messages.firstIndex(where: { $0.id == id }) {
-                messages[index].text += delta
-                messages[index].pending = true
-            } else {
-                messages.append(ChatMessage(id: id, role: .assistant, text: delta, pending: true))
+            let index = ensureAssistantMessage(for: itemId)
+            messages[index].text += delta
+            messages[index].pending = true
+
+        case "item/reasoning/textDelta":
+            appendReasoningDelta(params?["delta"] as? String, itemId: params?["itemId"] as? String, isSummary: false)
+
+        case "item/reasoning/summaryPartAdded":
+            if let itemId = params?["itemId"] as? String {
+                setActiveTurnStatus(.thinking)
+                _ = ensureAssistantMessage(for: itemId)
             }
+
+        case "item/reasoning/summaryTextDelta":
+            appendReasoningDelta(params?["delta"] as? String, itemId: params?["itemId"] as? String, isSummary: true)
 
         case "command/exec/outputDelta",
             "process/outputDelta",
@@ -755,6 +887,7 @@ final class ChatStore {
              "item/commandExecution/terminalInteraction":
             if turnRunning {
                 setActiveTurnStatus(.runningCommand)
+                appendToolOutput(Self.streamText(from: params), itemId: params?["itemId"] as? String)
             }
 
         case "turn/diff/updated",
@@ -776,7 +909,7 @@ final class ChatStore {
                 let itemId = item["id"] as? String
             else { return }
             if itemType == "agentMessage" {
-                let id = "assistant-\(itemId)"
+                let id = assistantMessageIdsByItemId[itemId] ?? "assistant-\(itemId)"
                 if let index = messages.firstIndex(where: { $0.id == id }) {
                     messages[index].text = item["text"] as? String ?? messages[index].text
                     messages[index].pending = false
@@ -792,7 +925,7 @@ final class ChatStore {
             clearPendingMessages()
             let turn = params?["turn"] as? [String: Any]
             let turnStatus = turn?["status"] as? String
-            let error = turn?["error"]
+            let error = Self.meaningfulError(turn?["error"])
             let wasCancelling = turnCancellationRequested
             resetTurnCancellation()
             if turnStatus == "interrupted" || (wasCancelling && error == nil) {
@@ -813,7 +946,7 @@ final class ChatStore {
             turnRunning = false
             resetTurnCancellation()
             setTaskStatus(.failed("Codex returned an error"))
-            presentEngineError(Self.describe(params?["error"] ?? params as Any))
+            presentEngineError(Self.describe(Self.meaningfulError(params?["error"]) ?? params ?? [:]))
 
         default:
             break
@@ -879,11 +1012,23 @@ final class ChatStore {
 
     private static func describe(_ error: Any) -> String {
         if let text = error as? String { return text }
+        if error is NSNull { return "Codex sent an error notification without details." }
         if let dict = error as? [String: Any] {
             if let message = dict["message"] as? String { return message }
             if let nested = dict["error"] { return describe(nested) }
         }
-        return "Unknown error."
+        return "Codex sent an error notification without details."
+    }
+
+    private static func meaningfulError(_ error: Any?) -> Any? {
+        guard let error, !(error is NSNull) else { return nil }
+        if let text = error as? String, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
+        if let dict = error as? [String: Any], dict.isEmpty {
+            return nil
+        }
+        return error
     }
 
     private static func turnId(from payload: Any?) -> String? {
@@ -892,6 +1037,65 @@ final class ChatStore {
         if let id = dict["id"] as? String { return id }
         if let turn = dict["turn"] as? [String: Any] {
             return turn["turnId"] as? String ?? turn["id"] as? String
+        }
+        return nil
+    }
+
+    private func ensureAssistantMessage(for itemId: String?) -> Int {
+        if let itemId,
+           let id = assistantMessageIdsByItemId[itemId],
+           let index = messages.firstIndex(where: { $0.id == id }) {
+            return index
+        }
+
+        if let id = activeAssistantMessageId,
+           let index = messages.firstIndex(where: { $0.id == id }),
+           messages[index].role == .assistant,
+           messages[index].pending {
+            if let itemId {
+                assistantMessageIdsByItemId[itemId] = id
+            }
+            return index
+        }
+
+        let id = "assistant-\(itemId ?? UUID().uuidString)"
+        messages.append(ChatMessage(id: id, role: .assistant, text: "", pending: true))
+        activeAssistantMessageId = id
+        if let itemId {
+            assistantMessageIdsByItemId[itemId] = id
+        }
+        return messages.index(before: messages.endIndex)
+    }
+
+    private func appendReasoningDelta(_ delta: String?, itemId: String?, isSummary: Bool) {
+        guard let delta, !delta.isEmpty else { return }
+        setActiveTurnStatus(.thinking)
+        let index = ensureAssistantMessage(for: itemId)
+        if isSummary {
+            messages[index].reasoningSummaryText = (messages[index].reasoningSummaryText ?? "") + delta
+        } else {
+            messages[index].reasoningText = (messages[index].reasoningText ?? "") + delta
+        }
+        messages[index].pending = true
+    }
+
+    private func appendToolOutput(_ delta: String?, itemId: String?) {
+        guard let delta, !delta.isEmpty else { return }
+        let index = ensureAssistantMessage(for: itemId)
+        messages[index].toolOutputText = (messages[index].toolOutputText ?? "") + delta
+        messages[index].pending = true
+    }
+
+    private static func streamText(from params: [String: Any]?) -> String? {
+        guard let params else { return nil }
+        for key in ["delta", "text", "chunk", "output", "message"] {
+            if let text = params[key] as? String { return text }
+        }
+        for key in ["output", "data", "terminalInteraction"] {
+            if let nested = params[key] as? [String: Any],
+               let text = streamText(from: nested) {
+                return text
+            }
         }
         return nil
     }
@@ -934,7 +1138,7 @@ final class ChatStore {
             stored = session
         }
 
-        selectedModel = Self.canonicalModelLabel(for: stored.selectedModel) ?? selectedModel
+        selectedModel = canonicalModelLabel(for: stored.selectedModel) ?? selectedModel
         reasoning = stored.reasoning
         selectedPermission = stored.permission
         projectRecords = stored.projects
@@ -999,7 +1203,7 @@ final class ChatStore {
         resetTurnCancellation()
         chatTitle = chat.title
         messages = chat.messages
-        selectedModel = Self.canonicalModelLabel(for: chat.model) ?? selectedModel
+        selectedModel = canonicalModelLabel(for: chat.model) ?? selectedModel
         reasoning = chat.reasoning
         selectedPermission = chat.permission
         selectedProjectId = chat.projectId

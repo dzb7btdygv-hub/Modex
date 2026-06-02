@@ -11,6 +11,9 @@ struct ChatMessage: Identifiable, Codable, Hashable {
     let role: MessageRole
     var text: String
     var pending: Bool = false
+    var reasoningText: String? = nil
+    var reasoningSummaryText: String? = nil
+    var toolOutputText: String? = nil
 }
 
 /// A row in the sidebar's "Recent Chats" list.
@@ -159,6 +162,27 @@ enum ChatTaskStatus: Equatable {
             return true
         case .idle, .ready, .completed, .failed, .cancelled:
             return false
+        }
+    }
+
+    var isConversationActivity: Bool {
+        switch self {
+        case .thinking, .runningCommand, .editingFiles, .waitingForPermission:
+            return true
+        case .idle, .startingCodex, .connecting, .initializing, .ready,
+             .creatingThread, .sendingMessage, .streamingResponse, .cancelling,
+             .completed, .failed, .cancelled:
+            return false
+        }
+    }
+
+    var conversationLabel: String {
+        switch self {
+        case .thinking: return "Thinking…"
+        case .runningCommand: return "Running command…"
+        case .editingFiles: return "Editing files…"
+        case .waitingForPermission: return "Waiting for permission…"
+        default: return label
         }
     }
 

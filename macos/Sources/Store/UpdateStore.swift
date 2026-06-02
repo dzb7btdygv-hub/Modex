@@ -106,7 +106,6 @@ final class UpdateStore {
         } catch {
             isUpdateAvailable = false
             message = error.localizedDescription
-            updateError = .updateCheckFailed(detail: error.localizedDescription)
             logger.error("Update check failed: \(error.localizedDescription, privacy: .public)")
         }
     }
