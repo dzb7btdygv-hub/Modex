@@ -29,7 +29,9 @@ struct TopChatBarView: View {
                             .accessibilityLabel("Git branch, \(gitBranch)")
                     }
 
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 8)
+
+                    TaskStatusPill(status: store.taskStatus)
                 }
             }
             .frame(maxWidth: 720, alignment: .leading)
@@ -43,6 +45,50 @@ struct TopChatBarView: View {
                 .padding(.horizontal, 28)
         }
         .background(ModexDetailSurface().opacity(0.58))
+    }
+}
+
+private struct TaskStatusPill: View {
+    let status: ChatTaskStatus
+
+    private var tint: Color {
+        switch status.tint {
+        case .secondary: return .secondary
+        case .success: return .green
+        case .warning: return .orange
+        case .danger: return .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if status.isActive {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(tint)
+                    .scaleEffect(0.58)
+                    .frame(width: 13, height: 13)
+            } else {
+                Image(systemName: status.systemImage)
+                    .font(.caption.weight(.semibold))
+            }
+
+            Text(status.label)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 9)
+        .frame(height: 28)
+        .frame(maxWidth: 190, alignment: .leading)
+        .background(tint.opacity(0.07), in: .rect(cornerRadius: 7))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(tint.opacity(0.16), lineWidth: 0.75)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Status, \(status.label)")
     }
 }
 
