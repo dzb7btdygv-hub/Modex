@@ -1,12 +1,12 @@
 import Foundation
 
-enum MessageRole {
+enum MessageRole: String, Codable {
     case user
     case assistant
     case system
 }
 
-struct ChatMessage: Identifiable {
+struct ChatMessage: Identifiable, Codable, Hashable {
     let id: String
     let role: MessageRole
     var text: String
@@ -15,7 +15,7 @@ struct ChatMessage: Identifiable {
 
 /// A row in the sidebar's "Recent Chats" list.
 struct RecentChat: Identifiable, Hashable {
-    let id = UUID()
+    let id: String
     let title: String
     let timeAgo: String
 }
@@ -24,11 +24,11 @@ struct RecentChat: Identifiable, Hashable {
 /// `List(selection:)` can span both the top-level destinations and recent chats.
 enum SidebarItem: Hashable {
     case destination(String)
-    case recent(UUID)
+    case recent(String)
 }
 
 /// Codex sandbox mode exposed by the composer permission selector.
-enum PermissionMode: String, CaseIterable, Identifiable {
+enum PermissionMode: String, CaseIterable, Identifiable, Codable {
     case readOnly
     case write
     case fullAccess
@@ -76,7 +76,7 @@ enum PermissionMode: String, CaseIterable, Identifiable {
 }
 
 /// Reasoning effort exposed by the top-bar selector (Low → xHigh).
-enum ReasoningEffort: String, CaseIterable, Identifiable {
+enum ReasoningEffort: String, CaseIterable, Identifiable, Codable {
     case low, medium, high, xhigh
 
     var id: String { rawValue }

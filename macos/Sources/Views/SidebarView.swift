@@ -3,20 +3,13 @@ import SwiftUI
 /// Stripped-to-basics sidebar: just recent chats + the account row. Native
 /// `List(.sidebar)` keeps the system material, selection, and hide/show.
 struct SidebarView: View {
+    @Environment(ChatStore.self) private var store
     @Binding var selection: SidebarItem?
-
-    private let recents: [RecentChat] = [
-        .init(title: "Build auth system", timeAgo: "2m ago"),
-        .init(title: "Fix navbar bug", timeAgo: "1h ago"),
-        .init(title: "Add dark mode", timeAgo: "3h ago"),
-        .init(title: "Improve docs", timeAgo: "Yesterday"),
-        .init(title: "Refactor components", timeAgo: "2d ago"),
-    ]
 
     var body: some View {
         List(selection: $selection) {
             Section {
-                ForEach(recents) { chat in
+                ForEach(store.recentChats) { chat in
                     HStack(spacing: 8) {
                         Text(chat.title)
                             .lineLimit(1)
@@ -34,7 +27,7 @@ struct SidebarView: View {
                         .foregroundStyle(.primary.opacity(0.62))
                     Spacer()
                     Button {
-                        // Start a new chat.
+                        store.startNewChat()
                     } label: {
                         Image(systemName: "plus")
                     }
