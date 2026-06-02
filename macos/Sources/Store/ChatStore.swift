@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import OSLog
@@ -28,17 +29,29 @@ final class ChatStore {
     private(set) var selectedChatId: String?
 
     let supervisor = CodexSupervisor()
+    private let errorCenter: ErrorCenter
     private let persistence = LocalSessionPersistence()
+    private let logger = Logger(subsystem: "dev.modex.desktop", category: "ChatStore")
     private var rpc: CodexRPCClient?
     private var threadId: String?
     private var booted = false
+    /// Bumped on every (re)boot and teardown so a stale connection's close
+    /// handler — fired after we've already moved on — is ignored.
+    private var bootGeneration = 0
+    /// The text of the most recent turn, so a failed send can be re-attempted
+    /// without re-appending the user's message.
+    private var lastAttemptedText: String?
     private var chatRecords: [PersistedChat] = []
     private var projectRecords: [PersistedProject] = []
     private var selectedProjectId: String?
 
     var canSend: Bool { isReady && !turnRunning }
 
-    init() {
+    init(errors: ErrorCenter) {
+        self.errorCenter = errors
+        supervisor.onUnexpectedExit = { [weak self] code in
+            self?.handleSidecarCrash(code: code)
+        }
         restoreSession()
     }
 
@@ -51,6 +64,10 @@ final class ChatStore {
     }
 
     private func boot() async {
+        bootGeneration += 1
+        let generation = bootGeneration
+        errorCenter.clearFatal()
+
         do {
             let wsURL = try await supervisor.start()
             status = "Connecting to Codex…"
@@ -61,28 +78,111 @@ final class ChatStore {
                     self?.handle(method: method, params: params)
                 },
                 onClose: { [weak self] reason in
-                    guard let self else { return }
-                    self.rpc = nil
-                    self.threadId = nil
-                    self.isReady = false
-                    self.turnRunning = false
-                    self.status = reason
+                    guard let self, self.bootGeneration == generation else { return }
+                    self.handleDisconnect(reason: reason)
                 }
             )
             rpc = client
 
-            _ = try await client.request("initialize", params: [
-                "clientInfo": ["name": "modex", "title": "Modex", "version": "0.1.0"],
-                "capabilities": ["experimentalApi": true, "requestAttestation": false],
-            ])
+            do {
+                _ = try await client.request("initialize", params: [
+                    "clientInfo": ["name": "modex", "title": "Modex", "version": "0.1.0"],
+                    "capabilities": ["experimentalApi": true, "requestAttestation": false],
+                ])
+            } catch {
+                // Distinguish a dropped connection from a rejected handshake.
+                let detail = error.localizedDescription
+                let connectionLost = detail.localizedCaseInsensitiveContains("disconnect")
+                throw connectionLost
+                    ? ModexError.rpcConnectionFailed(detail: detail)
+                    : ModexError.rpcInitializeFailed(detail: detail)
+            }
 
+            // A newer boot superseded this one (e.g. rapid retry); don't apply
+            // stale terminal state.
+            guard bootGeneration == generation else {
+                await client.close()
+                return
+            }
             isReady = true
             status = "Ready."
-        } catch {
+            logger.log("Codex engine ready (generation \(generation)).")
+        } catch let modexError as ModexError {
+            guard bootGeneration == generation else { return }
             isReady = false
-            let message = error.localizedDescription
-            status = message
-            appendSystem(message)
+            status = modexError.title
+            errorCenter.present(modexError) { [weak self] in self?.restartCodex() }
+        } catch {
+            guard bootGeneration == generation else { return }
+            isReady = false
+            let modexError = ModexError.rpcInitializeFailed(detail: error.localizedDescription)
+            status = modexError.title
+            errorCenter.present(modexError) { [weak self] in self?.restartCodex() }
+        }
+    }
+
+    /// Tears down the current engine/connection and boots a fresh one. Backs the
+    /// "Restart Codex" / "Try Again" recovery actions.
+    func restartCodex() {
+        bootGeneration += 1   // orphan the old connection's close handler
+        let client = rpc
+        rpc = nil
+        threadId = nil
+        isReady = false
+        turnRunning = false
+        booted = false
+        Task { await client?.close() }
+        supervisor.stop()
+        errorCenter.clearAll()
+        status = "Starting Codex…"
+        logger.log("Restarting Codex engine.")
+        bootIfNeeded()
+    }
+
+    /// The RPC connection closed after we were live. Mid-turn it reads as an
+    /// interrupted stream; otherwise as a lost/crashed engine. Pre-ready
+    /// failures are owned by `boot()`'s catch, so they're ignored here.
+    private func handleDisconnect(reason: String) {
+        guard isReady else {
+            rpc = nil
+            return
+        }
+        let wasRunningTurn = turnRunning
+        rpc = nil
+        threadId = nil
+        isReady = false
+        turnRunning = false
+        clearPendingMessages()
+        status = reason
+
+        let error = wasRunningTurn
+            ? ModexError.streamInterrupted(detail: reason)
+            : ModexError.sidecarCrashed(detail: reason)
+        errorCenter.present(error) { [weak self] in self?.restartCodex() }
+    }
+
+    /// The engine process exited unexpectedly. The RPC close handler usually
+    /// fires first with richer context; this is the backstop for the case where
+    /// the process dies before the socket reports it. `isReady` is the dedup
+    /// guard: whichever handler runs first flips it, so the other no-ops.
+    private func handleSidecarCrash(code: Int32) {
+        guard isReady else { return }
+        isReady = false
+        turnRunning = false
+        rpc = nil
+        threadId = nil
+        clearPendingMessages()
+        status = "Codex engine exited (status \(code))."
+        errorCenter.present(.sidecarCrashed(detail: "Codex engine exited with status \(code).")) {
+            [weak self] in self?.restartCodex()
+        }
+    }
+
+    /// Clears any half-streamed `pending` bubbles so an interrupted turn never
+    /// leaves a message stuck showing "Thinking…".
+    private func clearPendingMessages() {
+        for index in messages.indices where messages[index].pending {
+            messages[index].pending = false
         }
     }
 
@@ -119,27 +219,83 @@ final class ChatStore {
 
     func send(_ rawText: String) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let rpc, !turnRunning else { return }
+        guard !text.isEmpty, !turnRunning else { return }
+
+        // Write/Full access need a workspace root; nudge the user to pick one.
+        guard selectedFolderPath != nil || selectedPermission == .readOnly else {
+            errorCenter.present(.folderRequired()) { [weak self] in self?.presentFolderPicker() }
+            return
+        }
+
+        guard rpc != nil else {
+            errorCenter.present(.sidecarCrashed(detail: status)) { [weak self] in self?.restartCodex() }
+            return
+        }
 
         ensureActiveChat()
-        turnRunning = true
-        status = threadId == nil ? "Starting chat…" : "Thinking…"
         messages.append(ChatMessage(id: "user-\(UUID().uuidString)", role: .user, text: text))
         updateTitleIfNeeded(from: text)
         persistCurrentChat()
         saveSession()
 
+        startTurn(text)
+    }
+
+    /// Runs (or re-runs) a turn for already-appended text. Separated from
+    /// ``send(_:)`` so a retry resends without duplicating the user's message.
+    private func startTurn(_ text: String) {
+        guard let rpc, !turnRunning else { return }
+        lastAttemptedText = text
+        errorCenter.dismissBanner()
+        turnRunning = true
+        status = threadId == nil ? "Starting chat…" : "Thinking…"
+
         Task {
+            let threadId: String
             do {
-                let threadId = try await ensureThread(rpc)
+                threadId = try await ensureThread(rpc)
+            } catch {
+                turnRunning = false
+                status = "Couldn’t start the chat."
+                errorCenter.present(.threadStartFailed(detail: error.localizedDescription)) {
+                    [weak self] in self?.startTurn(text)
+                }
+                return
+            }
+
+            do {
                 status = "Thinking…"
                 _ = try await rpc.request("turn/start", params: turnStartParams(threadId: threadId, text: text))
             } catch {
                 turnRunning = false
-                status = "Could not send message."
-                appendSystem(error.localizedDescription)
+                status = "Message not sent."
+                errorCenter.present(Self.turnError(from: error)) {
+                    [weak self] in self?.startTurn(text)
+                }
             }
         }
+    }
+
+    /// Re-sends the last turn if it's safe to do so. Backs the banner "Resend".
+    func resendLastTurn() {
+        guard let text = lastAttemptedText, canSend else { return }
+        startTurn(text)
+    }
+
+    /// Presents the native folder picker and selects the chosen directory.
+    /// Shared by the top bar and the "Choose Folder" recovery action.
+    func presentFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Project Folder"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = selectedFolderPath.map { URL(fileURLWithPath: $0) }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        selectFolder(url)
     }
 
     private func ensureThread(_ rpc: CodexRPCClient) async throws -> String {
@@ -251,8 +407,12 @@ final class ChatStore {
         chatTitle = firstLine.count > 54 ? "\(firstLine.prefix(51))..." : firstLine
     }
 
+    /// Best-effort current git branch. Always non-fatal: any failure (not a
+    /// repo, git missing, non-zero exit) just yields `nil` so the branch pill
+    /// hides — it never blocks chat. Failures are logged, not surfaced.
     private static func gitBranch(at folder: URL) async -> String? {
         await Task.detached {
+            let log = Logger(subsystem: "dev.modex.desktop", category: "GitBranch")
             let process = Process()
             let output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -262,12 +422,16 @@ final class ChatStore {
             do {
                 try process.run()
                 process.waitUntilExit()
-                guard process.terminationStatus == 0 else { return nil }
+                guard process.terminationStatus == 0 else {
+                    log.debug("git branch detection skipped at \(folder.path, privacy: .public) (status \(process.terminationStatus)).")
+                    return nil
+                }
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 let branch = String(decoding: data, as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return branch.isEmpty ? nil : branch
             } catch {
+                log.debug("git branch detection failed at \(folder.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 return nil
             }
         }.value
@@ -318,11 +482,9 @@ final class ChatStore {
         case "turn/completed":
             turnRunning = false
             status = "Ready."
-            for index in messages.indices where messages[index].pending {
-                messages[index].pending = false
-            }
+            clearPendingMessages()
             if let turn = params?["turn"] as? [String: Any], let error = turn["error"] {
-                appendSystem(Self.describe(error))
+                presentEngineError(Self.describe(error))
             } else {
                 persistCurrentChat()
                 saveSession()
@@ -331,18 +493,43 @@ final class ChatStore {
         case "error":
             turnRunning = false
             status = "Codex returned an error."
-            appendSystem(Self.describe(params?["error"] ?? params as Any))
+            presentEngineError(Self.describe(params?["error"] ?? params as Any))
 
         default:
             break
         }
     }
 
-    private func appendSystem(_ text: String) {
-        ensureActiveChat()
-        messages.append(ChatMessage(id: "system-\(UUID().uuidString)", role: .system, text: text))
-        persistCurrentChat()
-        saveSession()
+    /// Surfaces a Codex-reported error in the banner, classifying sandbox /
+    /// permission rejections so we can suggest raising permissions.
+    private func presentEngineError(_ detail: String) {
+        let error = Self.isPermissionError(detail)
+            ? ModexError.permissionDenied(detail: detail)
+            : ModexError.engineError(detail: detail)
+        errorCenter.present(error) { [weak self] in self?.resendLastTurn() }
+    }
+
+    /// Maps a thrown turn error to a permission rejection or a generic send
+    /// failure based on its text.
+    private static func turnError(from error: Error) -> ModexError {
+        let detail = error.localizedDescription
+        return isPermissionError(detail)
+            ? .permissionDenied(detail: detail)
+            : .turnSendFailed(detail: detail)
+    }
+
+    /// Heuristic: does this error read like a sandbox/permission/approval
+    /// rejection (vs. a generic engine failure)? Anchored on sandbox- and
+    /// filesystem-specific signals so generic words like "rejected"/"blocked"
+    /// (which appear in unrelated network/server errors) don't misfire and
+    /// suggest raising permissions when that wouldn't help.
+    private static func isPermissionError(_ text: String) -> Bool {
+        let needles = ["sandbox", "seatbelt", "permission", "denied", "not permitted",
+                       "operation not permitted", "read-only", "read only",
+                       "eacces", "eperm", "not allowed", "not approved",
+                       "requires approval", "approval was declined", "approval required"]
+        let lower = text.lowercased()
+        return needles.contains { lower.contains($0) }
     }
 
     private static func describe(_ error: Any) -> String {
@@ -362,6 +549,7 @@ final class ChatStore {
     func shutdown() {
         persistCurrentChat()
         persistence.saveImmediately(snapshot())
+        bootGeneration += 1   // ignore the deliberate close handler
         let client = rpc
         rpc = nil
         threadId = nil
@@ -376,9 +564,18 @@ final class ChatStore {
     // MARK: - Local session persistence
 
     private func restoreSession() {
-        guard let stored = persistence.load() else {
+        let stored: PersistedSession
+        switch persistence.load() {
+        case .empty:
             refreshRecentChats()
             return
+        case .corrupt(let detail):
+            persistence.quarantineCorruptFile()
+            refreshRecentChats()
+            errorCenter.present(.sessionDataCorrupt(detail: detail))
+            return
+        case .session(let session):
+            stored = session
         }
 
         selectedModel = availableModels.contains(stored.selectedModel) ? stored.selectedModel : selectedModel
@@ -586,16 +783,36 @@ private final class LocalSessionPersistence {
         return decoder
     }()
 
-    func load() -> PersistedSession? {
+    enum LoadOutcome {
+        case empty
+        case session(PersistedSession)
+        case corrupt(String)
+    }
+
+    func load() -> LoadOutcome {
         let url = fileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return .empty }
 
         do {
             let data = try Data(contentsOf: url)
-            return try decoder.decode(PersistedSession.self, from: data)
+            return .session(try decoder.decode(PersistedSession.self, from: data))
         } catch {
             logger.error("Could not load persisted Modex session at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return nil
+            return .corrupt(error.localizedDescription)
+        }
+    }
+
+    /// Moves an unreadable session file aside so the next launch starts clean
+    /// without losing the original data for inspection.
+    func quarantineCorruptFile() {
+        let url = fileURL
+        let quarantined = url.deletingLastPathComponent().appendingPathComponent("session-corrupt.json")
+        try? FileManager.default.removeItem(at: quarantined)
+        do {
+            try FileManager.default.moveItem(at: url, to: quarantined)
+            logger.error("Quarantined corrupt session to \(quarantined.path, privacy: .public)")
+        } catch {
+            logger.error("Could not quarantine corrupt session: \(error.localizedDescription, privacy: .public)")
         }
     }
 

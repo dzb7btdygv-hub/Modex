@@ -4,13 +4,21 @@ import AppKit
 @main
 struct ModexApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var store = ChatStore()
+    @State private var errors: ErrorCenter
+    @State private var store: ChatStore
     @State private var updates = UpdateStore()
     @State private var windowState = WindowStateStore()
+
+    init() {
+        let errors = ErrorCenter()
+        _errors = State(initialValue: errors)
+        _store = State(initialValue: ChatStore(errors: errors))
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environment(errors)
                 .environment(store)
                 .environment(updates)
                 .environment(windowState)
