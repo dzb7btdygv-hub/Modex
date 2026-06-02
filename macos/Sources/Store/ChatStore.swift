@@ -518,10 +518,16 @@ final class ChatStore {
             : .turnSendFailed(detail: detail)
     }
 
+    /// Heuristic: does this error read like a sandbox/permission/approval
+    /// rejection (vs. a generic engine failure)? Anchored on sandbox- and
+    /// filesystem-specific signals so generic words like "rejected"/"blocked"
+    /// (which appear in unrelated network/server errors) don't misfire and
+    /// suggest raising permissions when that wouldn't help.
     private static func isPermissionError(_ text: String) -> Bool {
-        let needles = ["sandbox", "permission", "denied", "not permitted", "read-only",
-                       "read only", "eacces", "eperm", "operation not permitted",
-                       "not approved", "approval", "rejected", "forbidden", "blocked"]
+        let needles = ["sandbox", "seatbelt", "permission", "denied", "not permitted",
+                       "operation not permitted", "read-only", "read only",
+                       "eacces", "eperm", "not allowed", "not approved",
+                       "requires approval", "approval was declined", "approval required"]
         let lower = text.lowercased()
         return needles.contains { lower.contains($0) }
     }
