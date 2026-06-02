@@ -71,7 +71,9 @@ private struct AccountFooter: View {
 
             Spacer(minLength: 8)
 
-            if updates.isUpdateAvailable || updates.isUpdating {
+            if updates.updateError != nil {
+                UpdateErrorChip()
+            } else if updates.isUpdateAvailable || updates.isUpdating {
                 UpdateButton()
             }
 
@@ -133,6 +135,112 @@ private struct UpdateButton: View {
         .disabled(updates.isUpdating)
         .help("A new version is available — click to update")
         .accessibilityLabel(updates.isUpdating ? "Updating Modex" : "Update Modex")
+    }
+}
+
+/// Compact amber chip shown in place of the update pill when a check or install
+/// fails. Tapping opens a small popover with the explanation, retry, and dismiss
+/// — keeping update errors near the control instead of the app-wide banner.
+private struct UpdateErrorChip: View {
+    @Environment(UpdateStore.self) private var updates
+    @State private var showPopover = false
+
+    var body: some View {
+        Button {
+            showPopover.toggle()
+        } label: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 26, height: 26)
+                .background(Capsule().fill(Color.orange.opacity(0.14)))
+                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.75))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(updates.updateError?.title ?? "Update failed")
+        .accessibilityLabel(updates.updateError?.title ?? "Update failed")
+        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
+            if let error = updates.updateError {
+                UpdateErrorPopover(error: error) {
+                    showPopover = false
+                    updates.retryAfterError()
+                } onDismiss: {
+                    showPopover = false
+                    updates.dismissError()
+                }
+            }
+        }
+    }
+}
+
+private struct UpdateErrorPopover: View {
+    let error: ModexError
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var showDetails = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(error.title)
+                    .font(.subheadline.weight(.semibold))
+            }
+
+            Text(error.explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let action = error.suggestedAction {
+                Text(action)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let detail = error.technicalDetail {
+                Button {
+                    withAnimation(.smooth(duration: 0.16)) { showDetails.toggle() }
+                } label: {
+                    Text(showDetails ? "Hide details" : "Show details")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                if showDetails {
+                    ScrollView {
+                        Text(detail)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
+                    .frame(maxHeight: 90)
+                    .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 7))
+                }
+            }
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.medium))
+                if error.isRetryable {
+                    Button(error.retryLabel ?? "Retry", action: onRetry)
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.small)
+                        .tint(.orange)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
     }
 }
 

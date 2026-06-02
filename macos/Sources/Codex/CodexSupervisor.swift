@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 /// Lifecycle phases for the bundled Codex `app-server`.
 enum CodexPhase: Equatable {
@@ -20,8 +21,14 @@ final class CodexSupervisor {
     private(set) var wsURL: URL?
     private(set) var message: String = "Idle."
 
+    /// Invoked when the engine terminates *unexpectedly* after a successful
+    /// launch (i.e. not via ``stop()``). Lets the orchestrator surface a crash.
+    var onUnexpectedExit: (@MainActor (Int32) -> Void)?
+
     private var process: Process?
     private var stdoutBuffer = ""
+    private var stoppedIntentionally = false
+    private let logger = Logger(subsystem: "dev.modex.desktop", category: "CodexSupervisor")
 
     /// Locates the Codex helper binary. In a packaged build it lives inside the
     /// app bundle's Resources; during development we fall back to the repo copy
@@ -46,13 +53,14 @@ final class CodexSupervisor {
     func start() async throws -> URL {
         guard phase == .stopped else {
             if let url = wsURL { return url }
-            throw CodexError.message("Codex is already starting.")
+            throw ModexError.sidecarLaunchFailed(detail: "Codex is already starting.")
         }
 
         guard let binary = Self.locateBinary() else {
             phase = .stopped
             message = "Could not find the Codex engine binary."
-            throw CodexError.message(message)
+            logger.error("Codex engine binary not found in bundle or repo fallback.")
+            throw ModexError.codexBinaryMissing()
         }
 
         // The binary may lose its executable bit when copied as a bundle resource.
@@ -62,6 +70,7 @@ final class CodexSupervisor {
 
         phase = .starting
         message = "Starting the Codex engine…"
+        stoppedIntentionally = false
         wsURL = nil
         stdoutBuffer = ""
 
@@ -90,7 +99,8 @@ final class CodexSupervisor {
         } catch {
             phase = .stopped
             message = "Failed to launch Codex: \(error.localizedDescription)"
-            throw CodexError.message(message)
+            logger.error("Codex engine failed to launch: \(error.localizedDescription, privacy: .public)")
+            throw ModexError.sidecarLaunchFailed(detail: error.localizedDescription)
         }
         self.process = process
 
@@ -103,16 +113,20 @@ final class CodexSupervisor {
                 return url
             }
             if phase == .stopped {
-                throw CodexError.message(message)
+                // The process exited during startup; `message` holds the last stderr line.
+                logger.error("Codex engine exited during startup: \(self.message, privacy: .public)")
+                throw ModexError.sidecarLaunchFailed(detail: message)
             }
             try await Task.sleep(nanoseconds: 80_000_000)
         }
 
+        logger.error("Codex engine did not advertise a WebSocket endpoint within 12s.")
         stop()
-        throw CodexError.message("Codex did not report a WebSocket endpoint in time.")
+        throw ModexError.sidecarStartTimeout(detail: message)
     }
 
     func stop() {
+        stoppedIntentionally = true
         process?.terminationHandler = nil
         if let pipe = process?.standardOutput as? Pipe {
             pipe.fileHandleForReading.readabilityHandler = nil
@@ -159,9 +173,15 @@ final class CodexSupervisor {
 
     private func handleTermination(code: Int32) {
         process = nil
-        if phase != .stopped {
+        let wasRunning = phase != .stopped
+        if wasRunning {
             phase = .stopped
             message = "Codex engine exited (status \(code))."
+        }
+        // An exit we didn't ask for, after a successful launch, is a crash.
+        if wasRunning && !stoppedIntentionally {
+            logger.error("Codex engine exited unexpectedly (status \(code)).")
+            onUnexpectedExit?(code)
         }
     }
 }

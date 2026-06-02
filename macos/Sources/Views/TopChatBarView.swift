@@ -14,7 +14,7 @@ struct TopChatBarView: View {
 
                 HStack(spacing: 8) {
                     Button {
-                        chooseFolder()
+                        store.presentFolderPicker()
                     } label: {
                         TopBarPillLabel(systemImage: "folder", title: store.selectedFolderName, showsChevron: true)
                     }
@@ -43,20 +43,6 @@ struct TopChatBarView: View {
                 .padding(.horizontal, 28)
         }
         .background(ModexDetailSurface().opacity(0.58))
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Project Folder"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = store.selectedFolderPath.map { URL(fileURLWithPath: $0) }
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        store.selectFolder(url)
     }
 }
 

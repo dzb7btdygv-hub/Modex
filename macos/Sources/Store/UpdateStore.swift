@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import OSLog
 
 /// Self-updater: periodically compares the installed app build against
 /// `origin/main` and, when behind, lets the user pull + rebuild + relaunch in
@@ -15,6 +16,12 @@ final class UpdateStore {
     private(set) var isChecking = false
     private(set) var isUpdating = false
     private(set) var message: String?
+
+    /// User-facing update failure, shown as a compact chip near the update
+    /// control rather than the app-wide error banner. `nil` when healthy.
+    private(set) var updateError: ModexError?
+
+    private let logger = Logger(subsystem: "dev.modex.desktop", category: "UpdateStore")
 
     /// Dynamic version, e.g. "v1.53". Derived from how much source has actually
     /// changed (cumulative git lines ÷ 1000): a tiny edit nudges the decimals, a
@@ -95,14 +102,18 @@ final class UpdateStore {
                 isUpdateAvailable = local != remote
             }
             message = nil
+            updateError = nil
         } catch {
             isUpdateAvailable = false
             message = error.localizedDescription
+            updateError = .updateCheckFailed(detail: error.localizedDescription)
+            logger.error("Update check failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     func installUpdate() {
         guard !isUpdating else { return }
+        updateError = nil
         Task {
             do {
                 let repo = try await resolveRepoRoot()
@@ -112,8 +123,25 @@ final class UpdateStore {
             } catch {
                 isUpdating = false
                 message = error.localizedDescription
+                updateError = .updateInstallFailed(detail: error.localizedDescription)
+                logger.error("Update install failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Re-runs whichever update step last failed. Backs the chip's retry control.
+    func retryAfterError() {
+        guard let updateError else { return }
+        self.updateError = nil
+        if updateError.kind == .updateInstallFailed {
+            installUpdate()
+        } else {
+            Task { await checkForUpdates() }
+        }
+    }
+
+    func dismissError() {
+        updateError = nil
     }
 
     // MARK: - Repo discovery
