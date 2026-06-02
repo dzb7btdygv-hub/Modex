@@ -23,7 +23,16 @@ struct TopChatBarView: View {
                     .accessibilityLabel("Choose project folder")
                     .accessibilityValue(store.selectedFolderPath ?? "No folder selected")
 
-                    if let gitBranch = store.gitBranch {
+                    if store.activeProjectMissing {
+                        Button {
+                            store.presentFolderPicker()
+                        } label: {
+                            FolderMissingPill()
+                        }
+                        .buttonStyle(.plain)
+                        .help("This project's folder is missing — choose it again")
+                        .accessibilityLabel("Project folder missing, choose again")
+                    } else if let gitBranch = store.gitBranch {
                         TopBarPillLabel(systemImage: "point.3.connected.trianglepath.dotted", title: gitBranch)
                             .accessibilityElement(children: .combine)
                             .accessibilityLabel("Git branch, \(gitBranch)")
@@ -31,7 +40,7 @@ struct TopChatBarView: View {
 
                     Spacer(minLength: 8)
 
-                    TaskStatusPill(status: store.taskStatus)
+                    TaskStatusLabel(status: store.taskStatus)
                 }
             }
             .frame(maxWidth: 720, alignment: .leading)
@@ -48,7 +57,7 @@ struct TopChatBarView: View {
     }
 }
 
-private struct TaskStatusPill: View {
+private struct TaskStatusLabel: View {
     let status: ChatTaskStatus
 
     private var tint: Color {
@@ -61,34 +70,41 @@ private struct TaskStatusPill: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            if status.isActive {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(tint)
-                    .scaleEffect(0.58)
-                    .frame(width: 13, height: 13)
-            } else {
-                Image(systemName: status.systemImage)
-                    .font(.caption.weight(.semibold))
-            }
+        Text(status.label)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .foregroundStyle(tint)
+            .contentTransition(.opacity)
+            .shimmering(active: status.isActive)
+            .frame(maxWidth: 220, alignment: .trailing)
+            .animation(.smooth(duration: 0.25), value: status.label)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Status, \(status.label)")
+    }
+}
 
-            Text(status.label)
+private struct FolderMissingPill: View {
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption.weight(.semibold))
+            Text("Folder missing")
+                .font(.subheadline.weight(.medium))
                 .lineLimit(1)
-                .truncationMode(.tail)
         }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 9)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 10)
         .frame(height: 28)
-        .frame(maxWidth: 190, alignment: .leading)
-        .background(tint.opacity(0.07), in: .rect(cornerRadius: 7))
+        .background(Color.orange.opacity(hovering ? 0.16 : 0.10), in: .rect(cornerRadius: 7))
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(tint.opacity(0.16), lineWidth: 0.75)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.75)
         )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status, \(status.label)")
+        .contentShape(.rect(cornerRadius: 7))
+        .onHover { hovering = $0 }
     }
 }
 

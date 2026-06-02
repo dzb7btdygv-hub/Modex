@@ -22,9 +22,11 @@ struct SidebarView: View {
                 }
             } header: {
                 HStack {
-                    Text("Recent Chats")
+                    Text(store.activeProjectName ?? "Recent Chats")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.primary.opacity(0.62))
+                        .lineLimit(1)
+                        .help(store.activeProjectName.map { "Chats in \($0)" } ?? "Recent chats")
                     Spacer()
                     Button {
                         store.startNewChat()
