@@ -28,6 +28,7 @@ struct ModexError: Identifiable, Error {
         case turnSendFailed
         case streamInterrupted
         case folderRequired
+        case folderMissing
         case permissionDenied
         case updateCheckFailed
         case updateInstallFailed
@@ -185,6 +186,19 @@ extension ModexError {
             explanation: "Write and Full access need a workspace folder so Codex knows where to work.",
             suggestedAction: "Pick a folder, or switch to Read only.",
             technicalDetail: nil,
+            severity: .warning,
+            isRetryable: true,
+            retryLabel: "Choose Folder"
+        )
+    }
+
+    static func folderMissing(path: String?) -> ModexError {
+        ModexError(
+            kind: .folderMissing,
+            title: "Project folder is missing",
+            explanation: "This project’s folder has been moved or deleted, so Codex has nowhere to work.",
+            suggestedAction: "Choose the folder again to reconnect the project.",
+            technicalDetail: trimmed(path),
             severity: .warning,
             isRetryable: true,
             retryLabel: "Choose Folder"

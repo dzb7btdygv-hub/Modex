@@ -44,8 +44,9 @@ private struct MessageRow: View {
             }
         case .assistant:
             Text(displayText)
-                .foregroundStyle(message.text.isEmpty && message.pending ? .secondary : .primary)
+                .foregroundStyle(isAwaitingReply ? .secondary : .primary)
                 .textSelection(.enabled)
+                .shimmering(active: isAwaitingReply)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .system:
             Label(message.text, systemImage: "exclamationmark.triangle")
@@ -58,7 +59,11 @@ private struct MessageRow: View {
         }
     }
 
+    private var isAwaitingReply: Bool {
+        message.text.isEmpty && message.pending
+    }
+
     private var displayText: String {
-        message.text.isEmpty && message.pending ? "Thinking…" : message.text
+        isAwaitingReply ? "Thinking…" : message.text
     }
 }

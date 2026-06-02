@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import OSLog
+import UniformTypeIdentifiers
 
 /// Drives the chat experience: boots the Codex engine, manages the RPC
 /// connection and thread, sends turns, and accumulates streamed output.
@@ -18,13 +19,18 @@ final class ChatStore {
     private(set) var turnRunning = false
 
     // MARK: - User selections (top-bar model + reasoning, composer context)
-    var selectedModel = "GPT-5.5"
-    let availableModels = ["GPT-5.5", "GPT-5.5 Codex", "GPT-5 mini"]
+    /// User-facing model label. This is the canonical value persisted per chat /
+    /// project; it is translated to a wire ``selectedModelSlug`` before being
+    /// sent to Codex.
+    var selectedModel = ChatStore.modelCatalog[0].label
+    /// Labels shown in the model picker.
+    var availableModels: [String] { Self.modelCatalog.map(\.label) }
     var reasoning: ReasoningEffort = .high
     private(set) var selectedPermission: PermissionMode = .readOnly
     private(set) var selectedFolderPath: String?
     private(set) var selectedFolderName = "Choose folder"
     private(set) var gitBranch: String?
+    private(set) var activeProjectMissing = false
     private(set) var chatTitle = ChatStore.newChatTitle
     private(set) var recentChats: [RecentChat] = []
     private(set) var selectedChatId: String?
@@ -47,10 +53,18 @@ final class ChatStore {
     private var turnCancellationRequested = false
     private var turnInterruptInFlight = false
     private var chatRecords: [PersistedChat] = []
-    private var projectRecords: [PersistedProject] = []
+    private var projectRecords: [Project] = []
     private var selectedProjectId: String?
 
     var canSend: Bool { isReady && !turnRunning }
+
+    /// Display name of the active project, shown as the scoping header for the
+    /// recent-chats list. `nil` when no folder/project is active.
+    var activeProjectName: String? {
+        guard let selectedProjectId,
+              let project = projectRecords.first(where: { $0.id == selectedProjectId }) else { return nil }
+        return project.displayName
+    }
 
     private func setTaskStatus(_ taskStatus: ChatTaskStatus) {
         guard self.taskStatus != taskStatus else { return }
@@ -231,6 +245,8 @@ final class ChatStore {
         }
 
         persistCurrentChat()
+        // A new chat starts from the active project's remembered defaults.
+        if let selectedProjectId { applyProjectDefaults(selectedProjectId) }
         let chat = makeChat()
         chatRecords.insert(chat, at: 0)
         selectedChatId = chat.id
@@ -262,6 +278,12 @@ final class ChatStore {
     func send(_ rawText: String) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !turnRunning else { return }
+
+        if activeProjectMissing {
+            setTaskStatus(.failed("Folder missing"))
+            errorCenter.present(.folderMissing(path: selectedFolderPath)) { [weak self] in self?.presentFolderPicker() }
+            return
+        }
 
         // Write/Full access need a workspace root; nudge the user to pick one.
         guard selectedFolderPath != nil || selectedPermission == .readOnly else {
@@ -396,7 +418,22 @@ final class ChatStore {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.directoryURL = selectedFolderPath.map { URL(fileURLWithPath: $0) }
+        panel.treatsFilePackagesAsDirectories = true
+        panel.allowedContentTypes = [.directory]
+        // Open at the current folder — but never at a path that no longer exists
+        // (that leaves the panel in a state where "Choose" stays disabled). Fall
+        // back to the nearest existing ancestor.
+        if let path = selectedFolderPath {
+            let fileManager = FileManager.default
+            if fileManager.fileExists(atPath: path) {
+                panel.directoryURL = URL(fileURLWithPath: path)
+            } else {
+                let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+                if fileManager.fileExists(atPath: parent.path) {
+                    panel.directoryURL = parent
+                }
+            }
+        }
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         selectFolder(url)
@@ -422,13 +459,15 @@ final class ChatStore {
     func selectPermission(_ permission: PermissionMode) {
         selectedPermission = permission
         persistCurrentChat()
+        rememberActiveProjectDefaults()
         saveSession()
         updateThreadSettingsIfNeeded()
     }
 
     func selectModel(_ model: String) {
-        selectedModel = model
+        selectedModel = Self.canonicalModelLabel(for: model) ?? model
         persistCurrentChat()
+        rememberActiveProjectDefaults()
         saveSession()
         updateThreadSettingsIfNeeded()
     }
@@ -436,26 +475,141 @@ final class ChatStore {
     func selectReasoning(_ effort: ReasoningEffort) {
         reasoning = effort
         persistCurrentChat()
+        rememberActiveProjectDefaults()
         saveSession()
         updateThreadSettingsIfNeeded()
     }
 
+    /// Picks a folder: creates the project (or reopens the existing one for that
+    /// path) and makes it the active workspace.
     func selectFolder(_ url: URL) {
-        let folder = url.standardizedFileURL
-        selectedProjectId = upsertProject(for: folder)
-        selectedFolderPath = folder.path
-        selectedFolderName = folder.lastPathComponent.isEmpty ? folder.path : folder.lastPathComponent
-        gitBranch = nil
+        // Resolve symlinks before standardizing so two paths that point at the
+        // same real directory (e.g. via a symlink) map to one project rather
+        // than duplicating. The app isn't sandboxed, so a resolved path is a
+        // sufficient identity — no security-scoped bookmark needed.
+        let folder = url.resolvingSymlinksInPath().standardizedFileURL
+        let projectId = upsertProject(for: folder)
+        openProject(projectId)
+    }
+
+    /// Activates a project: applies its remembered defaults, picks the right
+    /// chat to show, and refreshes the scoped chat list. Reused by folder
+    /// selection and (potentially) project switching elsewhere.
+    private func openProject(_ id: String) {
+        let switching = id != selectedProjectId
+        // Never switch workspaces out from under a running turn — it would yank
+        // the active chat away from a streaming response. Re-picking the same
+        // project mid-turn is harmless (just refreshes the display).
+        guard !(switching && turnRunning) else { return }
         persistCurrentChat()
+        selectedProjectId = id
+
+        // A folder action is a context switch: drop any transient error banner
+        // and clear a stale `failed` status so neither bleeds onto the new view.
+        errorCenter.dismissBanner()
+        if isReady { setTaskStatus(.ready) }
+
+        guard switching else {
+            // Same project re-picked — just refresh the folder display (path or
+            // name may have changed) and re-probe the branch.
+            applySelectedProject()
+            refreshRecentChats()
+            saveSession()
+            updateThreadSettingsIfNeeded()
+            return
+        }
+
+        applyProjectDefaults(id)
+
+        if let recent = mostRecentChat(in: id) {
+            // Reopening a project with history — restore its most recent chat.
+            // Checked first so switching back to a project never hijacks the
+            // empty scratch chat instead of the real conversation.
+            selectedChatId = recent.id
+            apply(recent)
+        } else if let index = currentChatIndex,
+                  chatRecords[index].messages.isEmpty, chatRecords[index].threadId == nil {
+            // Target project has no history; fold the current empty, unsent
+            // canvas into it rather than spawning a duplicate empty chat.
+            chatRecords[index].projectId = id
+            chatRecords[index].model = selectedModel
+            chatRecords[index].reasoning = reasoning
+            chatRecords[index].permission = selectedPermission
+            applySelectedProject()
+        } else if currentChatIndex != nil {
+            // The active chat belongs elsewhere and this project has no history —
+            // start a fresh chat in it.
+            let chat = makeChat()
+            chatRecords.insert(chat, at: 0)
+            selectedChatId = chat.id
+            apply(chat)
+        } else {
+            // No active chat yet (fresh launch). Defaults are applied; the next
+            // send will create the first chat in this project.
+            applySelectedProject()
+        }
+
+        refreshRecentChats()
         saveSession()
         updateThreadSettingsIfNeeded()
+    }
 
-        Task {
-            let branch = await Self.gitBranch(at: folder)
-            if selectedFolderPath == folder.path {
-                gitBranch = branch
-            }
+    /// Seeds the composer (access mode, model, reasoning) from a project's
+    /// remembered defaults. Used when *opening* a project — never when opening an
+    /// existing chat, whose own saved settings win.
+    private func applyProjectDefaults(_ id: String) {
+        guard let project = projectRecords.first(where: { $0.id == id }) else { return }
+        selectedPermission = project.defaultPermission
+        if let model = project.lastModel, let label = Self.canonicalModelLabel(for: model) {
+            selectedModel = label
         }
+        reasoning = project.lastReasoning
+    }
+
+    /// Writes the current composer selections back to the active project so the
+    /// project remembers them as its last-used defaults.
+    private func rememberActiveProjectDefaults() {
+        guard let selectedProjectId,
+              let index = projectRecords.firstIndex(where: { $0.id == selectedProjectId }) else { return }
+        projectRecords[index].defaultPermission = selectedPermission
+        projectRecords[index].lastModel = selectedModel
+        projectRecords[index].lastReasoning = reasoning
+    }
+
+    private func mostRecentChat(in projectId: String) -> PersistedChat? {
+        chatRecords
+            .filter { $0.projectId == projectId }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    // MARK: - Model catalog
+
+    /// A selectable model: `label` is shown in the UI and persisted per chat /
+    /// project; `slug` is the identifier Codex accepts on the wire. Sending a
+    /// display name (e.g. "GPT-5.5") instead of its slug ("gpt-5.5") makes the
+    /// engine reject the request as an unsupported model.
+    private struct ModelOption {
+        let label: String
+        let slug: String
+        var aliases: [String] = []
+    }
+
+    /// Slugs sourced from the bundled Codex engine's visible model cache.
+    private static let modelCatalog: [ModelOption] = [
+        ModelOption(label: "GPT-5.5", slug: "gpt-5.5"),
+        ModelOption(label: "GPT-5.4", slug: "gpt-5.4"),
+        ModelOption(label: "GPT-5.4-Mini", slug: "gpt-5.4-mini", aliases: ["GPT-5.4 Mini", "GPT-5 mini"]),
+        ModelOption(label: "GPT-5.3-Codex-Spark", slug: "gpt-5.3-codex-spark", aliases: ["GPT-5.3 Codex", "GPT-5.5 Codex"]),
+    ]
+
+    private static func canonicalModelLabel(for value: String) -> String? {
+        modelCatalog.first { option in
+            option.label == value || option.slug == value || option.aliases.contains(value)
+        }?.label
+    }
+
+    private var selectedModelSlug: String {
+        Self.modelCatalog.first { $0.label == selectedModel }?.slug ?? Self.modelCatalog[0].slug
     }
 
     private func threadStartParams() -> [String: Any] {
@@ -463,7 +617,7 @@ final class ChatStore {
             "approvalPolicy": "never",
             "sandbox": selectedPermission.sandboxMode,
             "ephemeral": false,
-            "model": selectedModel,
+            "model": selectedModelSlug,
             "serviceName": "modex",
         ]
         if let selectedFolderPath {
@@ -477,7 +631,7 @@ final class ChatStore {
         var params: [String: Any] = [
             "threadId": threadId,
             "input": [["type": "text", "text": text, "text_elements": []]],
-            "model": selectedModel,
+            "model": selectedModelSlug,
             "effort": reasoning.rawValue,
             "sandboxPolicy": selectedPermission.sandboxPolicy(folderPath: selectedFolderPath),
         ]
@@ -489,11 +643,11 @@ final class ChatStore {
     }
 
     private func updateThreadSettingsIfNeeded() {
-        guard let rpc, let threadId, !turnRunning else { return }
+        guard let rpc, let threadId, !turnRunning, !activeProjectMissing else { return }
 
         var params: [String: Any] = [
             "threadId": threadId,
-            "model": selectedModel,
+            "model": selectedModelSlug,
             "effort": reasoning.rawValue,
             "sandboxPolicy": selectedPermission.sandboxPolicy(folderPath: selectedFolderPath),
         ]
@@ -780,7 +934,7 @@ final class ChatStore {
             stored = session
         }
 
-        selectedModel = availableModels.contains(stored.selectedModel) ? stored.selectedModel : selectedModel
+        selectedModel = Self.canonicalModelLabel(for: stored.selectedModel) ?? selectedModel
         reasoning = stored.reasoning
         selectedPermission = stored.permission
         projectRecords = stored.projects
@@ -803,6 +957,7 @@ final class ChatStore {
         if let selectedChatId, let chat = chatRecords.first(where: { $0.id == selectedChatId }) {
             apply(chat)
         } else {
+            if let selectedProjectId { applyProjectDefaults(selectedProjectId) }
             applySelectedProject()
         }
         refreshRecentChats()
@@ -844,7 +999,7 @@ final class ChatStore {
         resetTurnCancellation()
         chatTitle = chat.title
         messages = chat.messages
-        selectedModel = availableModels.contains(chat.model) ? chat.model : selectedModel
+        selectedModel = Self.canonicalModelLabel(for: chat.model) ?? selectedModel
         reasoning = chat.reasoning
         selectedPermission = chat.permission
         selectedProjectId = chat.projectId
@@ -856,19 +1011,37 @@ final class ChatStore {
             selectedFolderPath = nil
             selectedFolderName = "Choose folder"
             gitBranch = nil
+            activeProjectMissing = false
             return
         }
 
         selectedFolderPath = project.path
-        selectedFolderName = project.name.isEmpty ? project.path : project.name
-        gitBranch = nil
-        let folder = URL(fileURLWithPath: project.path)
+        selectedFolderName = project.displayName
+        activeProjectMissing = !project.folderExists
+        // Show the cached branch immediately; refresh in the background.
+        gitBranch = project.cachedGitBranch
+
+        // A missing folder can't be a git repo — skip the probe and keep the
+        // warning visible.
+        guard !activeProjectMissing else { return }
+
+        let folder = project.folderURL
+        let projectId = project.id
         Task {
             let branch = await Self.gitBranch(at: folder)
-            if selectedFolderPath == project.path {
-                gitBranch = branch
-            }
+            guard self.selectedProjectId == projectId else { return }
+            gitBranch = branch
+            cacheGitBranch(branch, for: projectId)
         }
+    }
+
+    /// Persists the freshly-probed branch onto its project so the next open
+    /// shows it instantly. No-ops when unchanged to avoid redundant writes.
+    private func cacheGitBranch(_ branch: String?, for projectId: String) {
+        guard let index = projectRecords.firstIndex(where: { $0.id == projectId }),
+              projectRecords[index].cachedGitBranch != branch else { return }
+        projectRecords[index].cachedGitBranch = branch
+        saveSession()
     }
 
     private func persistCurrentChat() {
@@ -888,6 +1061,8 @@ final class ChatStore {
         refreshRecentChats()
     }
 
+    /// Maps a folder to its project, creating one if this path is new. Dedupes
+    /// strictly by standardized path so the same folder never spawns duplicates.
     private func upsertProject(for folder: URL) -> String {
         let path = folder.path
         let name = folder.lastPathComponent.isEmpty ? path : folder.lastPathComponent
@@ -898,13 +1073,27 @@ final class ChatStore {
             return projectRecords[index].id
         }
 
-        let project = PersistedProject(id: UUID().uuidString, path: path, name: name, lastOpenedAt: Date())
+        let now = Date()
+        let project = Project(
+            id: UUID().uuidString,
+            name: name,
+            path: path,
+            createdAt: now,
+            lastOpenedAt: now,
+            defaultPermission: selectedPermission,
+            lastModel: selectedModel,
+            lastReasoning: reasoning
+        )
         projectRecords.append(project)
         return project.id
     }
 
+    /// Recent chats scoped to the active project. Chats with no project (e.g.
+    /// Read-only sessions started without a folder) surface only when no project
+    /// is active, so a chat is always grouped under the workspace it belongs to.
     private func refreshRecentChats() {
         recentChats = chatRecords
+            .filter { $0.projectId == selectedProjectId }
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { RecentChat(id: $0.id, title: $0.title, timeAgo: Self.timeAgo(from: $0.updatedAt)) }
     }
@@ -947,15 +1136,8 @@ private struct PersistedSession: Codable {
     var selectedModel: String
     var reasoning: ReasoningEffort
     var permission: PermissionMode
-    var projects: [PersistedProject]
+    var projects: [Project]
     var chats: [PersistedChat]
-}
-
-private struct PersistedProject: Codable, Hashable {
-    var id: String
-    var path: String
-    var name: String
-    var lastOpenedAt: Date
 }
 
 private struct PersistedChat: Codable, Hashable {
