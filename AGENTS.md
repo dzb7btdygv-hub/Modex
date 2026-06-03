@@ -22,11 +22,19 @@ Modex is a public, open-source product repo. Treat every committed change as rel
 
 ## Implementation Priorities
 
-- Tauri + React desktop app.
-- Rust supervisor for Codex process management, health checks, safe mode, repair, and logs.
+- The shipping product is a **native SwiftUI app for macOS** in `macos/`
+  (built with `xcodegen` + `xcodebuild`, targeting the macOS 26 SDK).
+- `macos/Sources/Codex/CodexSupervisor.swift` manages the Codex process (spawn,
+  endpoint discovery, crash detection) via a plain `Process`; `CodexRPCClient`
+  speaks the app-server JSON-RPC over a loopback WebSocket.
 - Connect to `codex app-server` over its JSON-RPC/WebSocket protocol.
-- Start with API-key auth unless ChatGPT login is verified as allowed for third-party clients.
+- Auth is delegated to the user's local Codex setup (`codex login` / `~/.codex/`);
+  Modex stores no credentials of its own.
 - Keep the Codex integration thin and replaceable.
+- A legacy **Tauri + React** prototype remains in `src/` and `src-tauri/`. It is
+  not the shipping product; do not add features there. The `npm run prepare:codex`
+  script is retained because the native app uses it to obtain the bundled Codex
+  engine binary.
 
 ## Code Style
 

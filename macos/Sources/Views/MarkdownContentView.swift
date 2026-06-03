@@ -17,7 +17,7 @@ struct MarkdownContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(MarkdownParser.parse(text).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(MarkdownCache.shared.blocks(for: text).enumerated()), id: \.offset) { _, block in
                 view(for: block)
             }
         }
@@ -284,6 +284,36 @@ struct CalloutView: View {
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title ?? kind.title) callout")
+    }
+}
+
+// MARK: - Parse cache
+
+/// Small main-actor LRU that memoizes `text -> [MarkdownBlock]`.
+///
+/// During streaming, any store change re-renders the whole conversation, so
+/// every message's `MarkdownContent.body` re-runs — without a cache that re-parses
+/// every *settled* message's unchanged text on every token (O(messages × tokens)).
+/// Keying by the exact text turns those into cache hits; only the one message
+/// whose text actually changed is parsed.
+@MainActor
+final class MarkdownCache {
+    static let shared = MarkdownCache()
+
+    private var entries: [String: [MarkdownBlock]] = [:]
+    private var order: [String] = []
+    private let limit = 256
+
+    func blocks(for text: String) -> [MarkdownBlock] {
+        if let hit = entries[text] { return hit }
+        let parsed = MarkdownParser.parse(text)
+        entries[text] = parsed
+        order.append(text)
+        if order.count > limit {
+            let evicted = order.removeFirst()
+            entries.removeValue(forKey: evicted)
+        }
+        return parsed
     }
 }
 

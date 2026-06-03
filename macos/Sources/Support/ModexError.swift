@@ -30,6 +30,7 @@ struct ModexError: Identifiable, Error {
         case folderRequired
         case folderMissing
         case permissionDenied
+        case notAuthenticated
         case updateCheckFailed
         case updateInstallFailed
         case sessionDataCorrupt
@@ -212,6 +213,19 @@ extension ModexError {
             title: "Action blocked by permissions",
             explanation: "Codex was prevented from doing this by the current sandbox mode.",
             suggestedAction: "Raise permissions (Write or Full access) in the composer, then try again.",
+            technicalDetail: trimmed(detail),
+            severity: .warning,
+            isRetryable: true,
+            retryLabel: "Resend"
+        )
+    }
+
+    static func notAuthenticated(detail: String? = nil) -> ModexError {
+        ModexError(
+            kind: .notAuthenticated,
+            title: "Sign in to Codex",
+            explanation: "Codex isn’t signed in, so it can’t answer yet. Modex uses your local Codex credentials.",
+            suggestedAction: "Run “codex login” in Terminal (or set an API key Codex supports), then resend.",
             technicalDetail: trimmed(detail),
             severity: .warning,
             isRetryable: true,

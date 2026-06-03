@@ -45,6 +45,24 @@ fi
 
 BUILD_COMMIT="$(git rev-parse HEAD)"
 
+# The macOS app bundles the Codex engine binary, which is gitignored and produced
+# by `npm run prepare:codex`. On a fresh clone it won't exist yet, and xcodegen
+# hard-fails on the missing build resource — so fetch it before generating.
+CODEX_BINARY="$REPO_ROOT/src-tauri/binaries/codex-aarch64-apple-darwin"
+if [[ ! -f "$CODEX_BINARY" ]]; then
+  echo "Codex engine binary missing — preparing it via npm…"
+  command -v npm >/dev/null 2>&1 || {
+    echo "npm is required to fetch the Codex engine (install Node 24+)." >&2
+    exit 1
+  }
+  [[ -d "$REPO_ROOT/node_modules" ]] || npm --prefix "$REPO_ROOT" ci
+  npm --prefix "$REPO_ROOT" run prepare:codex
+fi
+[[ -f "$CODEX_BINARY" ]] || {
+  echo "Codex engine binary still missing after prepare:codex." >&2
+  exit 1
+}
+
 # Regenerate the Xcode project from project.yml (the committed source of truth).
 xcodegen generate --spec "$REPO_ROOT/macos/project.yml" --project "$REPO_ROOT/macos"
 

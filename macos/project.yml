@@ -9,6 +9,9 @@ settings:
   base:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Swift *language mode* (built with the Xcode 26 / Swift 6.x toolchain). The
+    # code is @MainActor/actor-isolated and ready for Swift 6 mode; raise this to
+    # "6.0" to opt into strict concurrency checking once vetted.
     SWIFT_VERSION: "5.0"
     # Local development build: skip signing so the app + bundled codex
     # helper run without an Apple Developer team. Re-enable for distribution.

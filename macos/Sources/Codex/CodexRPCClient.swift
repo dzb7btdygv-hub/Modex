@@ -18,8 +18,21 @@ actor CodexRPCClient {
     private let onServerRequest: ServerRequestHandler?
 
     private var nextId = 1
-    private var pending: [Int: CheckedContinuation<Any?, Error>] = [:]
+    private var pending: [Int: Pending] = [:]
     private var closed = false
+
+    /// A request awaiting its response, paired with the timeout task that fails
+    /// it if Codex never replies (a hang, as opposed to a socket close).
+    private struct Pending {
+        let continuation: CheckedContinuation<Any?, Error>
+        let timeout: Task<Void, Never>
+    }
+
+    /// Default ceiling for a single request. Codex acknowledges `turn/start`
+    /// promptly (the model's work streams back as notifications), so every RPC
+    /// is expected to answer well within this window; exceeding it means the
+    /// engine is wedged and the caller should recover rather than hang forever.
+    private static let defaultTimeout: Duration = .seconds(120)
 
     init(
         url: URL,
@@ -35,9 +48,10 @@ actor CodexRPCClient {
         Task { await self.receiveLoop() }
     }
 
-    /// Sends a request and awaits its `result` payload (or throws on RPC error).
+    /// Sends a request and awaits its `result` payload (or throws on RPC error,
+    /// socket close, or timeout).
     @discardableResult
-    func request(_ method: String, params: [String: Any]) async throws -> Any? {
+    func request(_ method: String, params: [String: Any], timeout: Duration = CodexRPCClient.defaultTimeout) async throws -> Any? {
         let id = nextId
         nextId += 1
 
@@ -48,16 +62,35 @@ actor CodexRPCClient {
         let text = String(decoding: data, as: UTF8.self)
 
         return try await withCheckedThrowingContinuation { continuation in
-            pending[id] = continuation
+            let timeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                await self?.expire(id, method: method)
+            }
+            pending[id] = Pending(continuation: continuation, timeout: timeoutTask)
             Task {
                 do {
                     try await task.send(.string(text))
                 } catch {
-                    pending[id] = nil
-                    continuation.resume(throwing: error)
+                    finish(id, with: .failure(error))
                 }
             }
         }
+    }
+
+    /// Resolves a pending request, cancelling its timeout. No-op if it already
+    /// resolved (response, timeout, or close raced first), so it never
+    /// double-resumes a continuation.
+    private func finish(_ id: Int, with result: Result<Any?, Error>) {
+        guard let entry = pending.removeValue(forKey: id) else { return }
+        entry.timeout.cancel()
+        entry.continuation.resume(with: result)
+    }
+
+    /// Fails a request whose response never arrived within its timeout window.
+    private func expire(_ id: Int, method: String) {
+        guard let entry = pending.removeValue(forKey: id) else { return }
+        entry.continuation.resume(throwing: CodexError.message("Codex didn’t respond to “\(method)” in time."))
     }
 
     func close() {
@@ -99,12 +132,11 @@ actor CodexRPCClient {
 
         // Response to one of our requests.
         if let id, object["result"] != nil || object["error"] != nil {
-            guard let continuation = pending.removeValue(forKey: id) else { return }
             if let error = object["error"] as? [String: Any] {
                 let msg = error["message"] as? String ?? "Codex error."
-                continuation.resume(throwing: CodexError.message(msg))
+                finish(id, with: .failure(CodexError.message(msg)))
             } else {
-                continuation.resume(returning: object["result"])
+                finish(id, with: .success(object["result"]))
             }
             return
         }
@@ -171,8 +203,9 @@ actor CodexRPCClient {
     private func failPending(_ message: String) {
         let waiting = pending
         pending.removeAll()
-        for (_, continuation) in waiting {
-            continuation.resume(throwing: CodexError.message(message))
+        for (_, entry) in waiting {
+            entry.timeout.cancel()
+            entry.continuation.resume(throwing: CodexError.message(message))
         }
     }
 }

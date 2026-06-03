@@ -140,7 +140,21 @@ final class CodexSupervisor {
     // MARK: - Stdout parsing
 
     private func ingest(_ chunk: String) {
+        // The only line we parse is the startup "listening on:" endpoint. Once we
+        // have it, stop accumulating: the pipe is already drained by the
+        // readability handler (so the engine never blocks on a full pipe), and
+        // retaining the rest of the engine's lifetime of stdout would grow without
+        // bound.
+        guard wsURL == nil else {
+            if !stdoutBuffer.isEmpty { stdoutBuffer = "" }
+            return
+        }
         stdoutBuffer += chunk
+        // Guard against a pathological no-newline stream growing unbounded before
+        // the endpoint line arrives.
+        if stdoutBuffer.utf8.count > 64_000 {
+            stdoutBuffer = String(stdoutBuffer.suffix(4_000))
+        }
         while let newline = stdoutBuffer.firstIndex(of: "\n") {
             let line = String(stdoutBuffer[..<newline])
             stdoutBuffer.removeSubrange(...newline)

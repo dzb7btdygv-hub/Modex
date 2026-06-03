@@ -5,9 +5,13 @@ private struct ShimmerModifier: ViewModifier {
     var duration: Double = 1.5
 
     @State private var phase: CGFloat = -1
+    /// Honor the system Reduce Motion setting: the shimmer is a continuous
+    /// repeating animation, exactly the kind of ongoing motion to drop for
+    /// motion-sensitive users. The (already dimmed) label still reads fine static.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        if active {
+        if active && !reduceMotion {
             content
                 .overlay {
                     GeometryReader { proxy in

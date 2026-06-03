@@ -173,8 +173,13 @@ private struct ThinkingDisclosure: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            AssistantMarkdownText(text: text, foregroundStyle: Color.secondary)
-                .padding(.top, 4)
+            // Only parse/render the reasoning body when the disclosure is open —
+            // it stays collapsed by default, so this avoids markdown work on every
+            // streamed reasoning token for content the user isn't looking at.
+            if isExpanded {
+                AssistantMarkdownText(text: text, foregroundStyle: Color.secondary)
+                    .padding(.top, 4)
+            }
         } label: {
             Text("Thinking")
                 .font(.callout.weight(.medium))
@@ -281,29 +286,11 @@ private struct AssistantActionBar: View {
     var body: some View {
         HStack(spacing: 2) {
             MessageCopyButton(text: text)
-            MessageReportButton()
             if canRegenerate {
                 ActionIconButton(systemImage: "arrow.clockwise", help: "Regenerate response", action: onRegenerate)
             }
         }
         .padding(.leading, -5) // nudge the glyphs to align under the body text
-    }
-}
-
-/// A report/flag control beneath an assistant reply. Confirms with a filled flag
-/// for a moment. (Not yet wired to a feedback backend.)
-private struct MessageReportButton: View {
-    @State private var reported = false
-
-    var body: some View {
-        ActionIconButton(
-            systemImage: reported ? "flag.fill" : "flag",
-            help: reported ? "Reported" : "Report response"
-        ) {
-            reported = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reported = false }
-        }
-        .animation(.easeInOut(duration: 0.15), value: reported)
     }
 }
 

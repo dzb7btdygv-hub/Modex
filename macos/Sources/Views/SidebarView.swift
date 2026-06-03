@@ -88,7 +88,7 @@ struct SidebarView: View {
             Color.clear.frame(height: 14) // breathing room under the traffic lights
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            AccountFooter()
+            EngineFooter()
         }
         .onAppear { if let id = store.activeProjectId { expandedProjects.insert(id) } }
         .onChange(of: store.activeProjectId) { _, id in if let id { expandedProjects.insert(id) } }
@@ -214,6 +214,9 @@ private struct ChatRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.12), value: hovering)
+        .accessibilityLabel("Chat, \(chat.title)")
+        .accessibilityValue(chat.timeAgo)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 }
 
@@ -382,14 +385,18 @@ private struct AccountSurface: View {
     }
 }
 
-private struct AccountFooter: View {
+/// The sidebar's bottom footer. Modex has no account, subscription, or sign-in,
+/// so this is an honest readout of the Codex engine's state plus the real
+/// controls that act on it (update when available, restart, reveal config).
+private struct EngineFooter: View {
+    @Environment(ChatStore.self) private var store
     @Environment(UpdateStore.self) private var updates
     @State private var expanded = false
 
     private var anim: Animation { .spring(response: 0.36, dampingFraction: 0.9) }
 
     var body: some View {
-        accountRow
+        engineRow
             // Wallpaper-backed so chat text scrolling under the bar is occluded.
             .background(AccountSurface())
             // Hidden while expanded — the raised replica below stands in for it.
@@ -397,12 +404,12 @@ private struct AccountFooter: View {
             .allowsHitTesting(!expanded)
             .overlay(alignment: .bottom) {
                 if expanded {
-                    // The account info rises and the menu fills in beneath it,
-                    // on the same wallpaper surface as the sidebar so it reads as
-                    // part of it (not a black card). An overlay (not taller inset
-                    // content) keeps the window from resizing.
+                    // The row rises and the menu fills in beneath it, on the same
+                    // wallpaper surface as the sidebar so it reads as part of it
+                    // (not a black card). An overlay (not taller inset content)
+                    // keeps the window from resizing.
                     VStack(spacing: 0) {
-                        accountRow
+                        engineRow
                         Divider()
                             .padding(.horizontal, 12)
                             .padding(.bottom, 4)
@@ -418,16 +425,17 @@ private struct AccountFooter: View {
             }
     }
 
-    private var accountRow: some View {
+    private var engineRow: some View {
         HStack(spacing: 9) {
-            Circle()
-                .fill(Color.accentColor.gradient)
+            EngineStatusDot(tint: statusColor)
                 .frame(width: 30, height: 30)
-                .overlay(Text("A").font(.subheadline.weight(.semibold)).foregroundStyle(.white))
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("Alex").font(.subheadline.weight(.medium))
-                Text("Pro Plan").font(.caption.weight(.medium)).foregroundStyle(.primary.opacity(0.7))
+                Text("Codex engine").font(.subheadline.weight(.medium))
+                Text(store.isReady ? "Connected" : store.status)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary.opacity(0.7))
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -449,24 +457,69 @@ private struct AccountFooter: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Account")
-            .accessibilityLabel(expanded ? "Hide account menu" : "Show account menu")
+            .help("Engine options")
+            .accessibilityLabel(expanded ? "Hide engine menu" : "Show engine menu")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Codex engine, \(store.isReady ? "connected" : store.status)")
     }
 
     private var menuItems: some View {
         VStack(spacing: 2) {
-            AccountRow(title: "Settings", icon: "gearshape") { collapse() }
-            AccountRow(title: "Manage Subscription", icon: "creditcard") { collapse() }
-            AccountRow(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", role: .destructive) { collapse() }
+            AccountRow(title: "Restart Codex", icon: "arrow.clockwise") {
+                collapse()
+                store.restartCodex()
+            }
+            AccountRow(title: "Reveal Codex Config", icon: "folder") {
+                collapse()
+                revealCodexConfig()
+            }
         }
         .padding(.horizontal, 6)
         .padding(.bottom, 8)
     }
 
+    private var statusColor: Color {
+        switch store.taskStatus {
+        case .ready, .completed: return .green
+        case .failed: return .red
+        default: return store.isReady ? .green : .orange
+        }
+    }
+
+    /// Reveals the user's Codex config (or the ~/.codex folder) in Finder so they
+    /// can inspect trusted projects / auth without leaving Modex.
+    private func revealCodexConfig() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let codexDir = home.appendingPathComponent(".codex", isDirectory: true)
+        let config = codexDir.appendingPathComponent("config.toml")
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: config.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([config])
+        } else if fileManager.fileExists(atPath: codexDir.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([codexDir])
+        } else {
+            NSWorkspace.shared.open(home)
+        }
+    }
+
     private func collapse() { withAnimation(anim) { expanded = false } }
+}
+
+/// A small filled status indicator for the engine footer (green = connected,
+/// amber = starting, red = failed).
+private struct EngineStatusDot: View {
+    let tint: Color
+
+    var body: some View {
+        ZStack {
+            Circle().fill(tint.opacity(0.16))
+            Circle().fill(tint).frame(width: 9, height: 9)
+        }
+        .accessibilityHidden(true)
+    }
 }
 
 /// Pink update pill: a compact icon that, on hover, grows leftward into a

@@ -9,7 +9,38 @@ permissions:
   contents: read
 
 jobs:
-  checks:
+  # Native SwiftUI app — the shipping product. Requires the macOS 26 SDK
+  # (Xcode 26), which is newer than current hosted runners, so this job is kept
+  # non-blocking (continue-on-error) until GitHub provides such an image. Flip
+  # continue-on-error off once `xcode-select -p` points at Xcode 26+.
+  macos-app:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      # actions/checkout v5.0.1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      # actions/setup-node v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+      - run: brew install xcodegen
+      - run: npm ci
+      - run: npm run prepare:codex
+      - run: xcodegen generate --spec macos/project.yml --project macos
+      - name: Build & test native app
+        run: |
+          xcodebuild test \
+            -project macos/Modex.xcodeproj \
+            -scheme Modex \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath macos/build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+  # Legacy Tauri client (src/, src-tauri/). Not the shipping product, but still
+  # validated; also exercises the shared `npm run prepare:codex` engine fetch.
+  legacy-tauri:
     runs-on: macos-latest
     steps:
       # actions/checkout v5.0.1
