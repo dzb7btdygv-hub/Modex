@@ -37,6 +37,18 @@ final class ChatStore {
     private(set) var chatTitle = ChatStore.newChatTitle
     private(set) var selectedChatId: String?
 
+    // MARK: - Usage (context window + rate limits, taken straight from Codex)
+    /// Current conversation's context-window occupancy, from the engine's
+    /// `thread/tokenUsage/updated` stream. Drives the top-bar ring.
+    private(set) var contextUsage: ContextUsage?
+    /// Codex account rate limits, from `account/rateLimits/read` + the
+    /// `account/rateLimits/updated` stream. `primary` is the short (≈5h) window,
+    /// `secondary` the long (≈weekly) one — identified by their durations.
+    private(set) var rateLimitPrimary: RateLimitWindowInfo?
+    private(set) var rateLimitSecondary: RateLimitWindowInfo?
+    /// True while a `/compact` is in flight, so the UI can show progress.
+    private(set) var isCompacting = false
+
     let supervisor = CodexSupervisor()
     private let errorCenter: ErrorCenter
     private let persistence = LocalSessionPersistence()
@@ -71,6 +83,9 @@ final class ChatStore {
     private var loadingProjectPaths: Set<String> = []
 
     var canSend: Bool { isReady && !turnRunning }
+
+    /// Whether `/compact` is available: a live thread, idle, not already compacting.
+    var canCompact: Bool { isReady && threadId != nil && !turnRunning && !isCompacting }
 
     /// Display name of the active project, shown as the scoping header for the
     /// recent-chats list. `nil` when no folder/project is active.
@@ -151,14 +166,19 @@ final class ChatStore {
             let client = CodexRPCClient(
                 url: wsURL,
                 onNotification: { [weak self] method, params in
-                    self?.handle(method: method, params: params)
+                    // Drop notifications queued from an orphaned client: a restart
+                    // bumps bootGeneration, so a late-draining turn/completed or
+                    // delta can't mutate the freshly-booted session.
+                    guard let self, self.bootGeneration == generation else { return }
+                    self.handle(method: method, params: params)
                 },
                 onClose: { [weak self] reason in
                     guard let self, self.bootGeneration == generation else { return }
                     self.handleDisconnect(reason: reason)
                 },
                 onServerRequest: { [weak self] method, started in
-                    self?.handleServerRequest(method: method, started: started)
+                    guard let self, self.bootGeneration == generation else { return }
+                    self.handleServerRequest(method: method, started: started)
                 }
             )
             rpc = client
@@ -188,6 +208,7 @@ final class ChatStore {
             isReady = true
             setTaskStatus(.ready)
             if let id = selectedProjectId { loadProjectThreads(id) }  // active project's history
+            loadRateLimits()
             logger.log("Codex engine ready (generation \(generation)).")
         } catch let modexError as ModexError {
             guard bootGeneration == generation else { return }
@@ -296,8 +317,12 @@ final class ChatStore {
     func selectChat(_ id: String) {
         guard !turnRunning, id != selectedChatId else { return }
 
-        // A Codex thread (in any loaded project list) → resume it.
+        // A Codex thread (in any loaded project list) → resume it. Persist the
+        // outgoing chat here, under its current (unchanged) project scope, since
+        // openCodexThread no longer persists for us — doing so there would stamp
+        // this still-current chat with a project it doesn't belong to.
         if threadsByProjectPath.values.contains(where: { $0.contains { $0.id == id } }) {
+            persistCurrentChat()
             openCodexThread(id)
             return
         }
@@ -315,27 +340,31 @@ final class ChatStore {
 
     // MARK: - Sending
 
-    func send(_ rawText: String) {
+    /// Returns whether the message was accepted. The composer relies on this to
+    /// only clear its draft on success — a rejected send (missing folder, engine
+    /// down) leaves the user's text intact instead of silently dropping it.
+    @discardableResult
+    func send(_ rawText: String) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !turnRunning else { return }
+        guard !text.isEmpty, !turnRunning else { return false }
 
         if activeProjectMissing {
             setTaskStatus(.failed("Folder missing"))
             errorCenter.present(.folderMissing(path: selectedFolderPath)) { [weak self] in self?.presentFolderPicker() }
-            return
+            return false
         }
 
         // Write/Full access need a workspace root; nudge the user to pick one.
         guard selectedFolderPath != nil || selectedPermission == .readOnly else {
             setTaskStatus(.failed("Folder required"))
             errorCenter.present(.folderRequired()) { [weak self] in self?.presentFolderPicker() }
-            return
+            return false
         }
 
         guard rpc != nil else {
             setTaskStatus(.failed("Codex unavailable"))
             errorCenter.present(.sidecarCrashed(detail: status)) { [weak self] in self?.restartCodex() }
-            return
+            return false
         }
 
         ensureActiveChat()
@@ -345,6 +374,7 @@ final class ChatStore {
         saveSession()
 
         startTurn(text)
+        return true
     }
 
     /// Runs (or re-runs) a turn for already-appended text. Separated from
@@ -420,6 +450,16 @@ final class ChatStore {
                     "threadId": threadId,
                     "turnId": currentTurnId,
                 ])
+                // The engine acked the interrupt and should follow with
+                // turn/completed (status "interrupted") to clear turnRunning. If
+                // it drops that notification, don't leave the UI stuck in
+                // "Cancelling" with turnRunning pinned true — finish the cancelled
+                // turn ourselves after a short grace period. The id guard makes
+                // this a no-op if a real completion (or a new turn) arrived first.
+                try? await Task.sleep(for: .seconds(4))
+                if turnRunning, turnCancellationRequested, self.currentTurnId == currentTurnId {
+                    finishCancelledTurn()
+                }
             } catch {
                 // If the turn already reached turn/completed (which clears these
                 // flags), don't contradict it with a cancel-failed banner.
@@ -730,6 +770,11 @@ final class ChatStore {
         ModelOption(label: "GPT-5.4-Mini", slug: "gpt-5.4-mini", aliases: ["GPT-5.4 Mini", "GPT-5 mini"]),
         ModelOption(label: "GPT-5.3-Codex", slug: "gpt-5.3-codex", aliases: ["GPT-5.3 Codex", "GPT-5.3-Codex-Spark", "gpt-5.3-codex-spark"]),
     ]
+
+    /// Safe default model label, reused by the migration-tolerant session
+    /// decoders when a persisted record omits its model. `nonisolated` so the
+    /// `Decodable` inits (which are nonisolated) can read it.
+    fileprivate nonisolated static let defaultModelLabel: String = fallbackModelCatalog[0].label
 
     private func canonicalModelLabel(for value: String) -> String? {
         Self.canonicalModelLabel(for: value, in: modelOptions)
@@ -1157,6 +1202,18 @@ final class ChatStore {
                 saveSession()
             }
 
+        case "thread/tokenUsage/updated":
+            applyTokenUsage(params?["tokenUsage"] ?? params)
+
+        case "account/rateLimits/updated":
+            applyRateLimits(params?["rateLimits"] ?? params)
+
+        case "thread/name/updated":
+            applyCodexThreadName(params?["threadName"] as? String ?? params?["name"] as? String)
+
+        case "thread/compacted":
+            isCompacting = false
+
         case "error":
             turnRunning = false
             resetTurnCancellation()
@@ -1335,6 +1392,112 @@ final class ChatStore {
         return nil
     }
 
+    // MARK: - Usage (context window + rate limits)
+
+    /// Parses a `thread/tokenUsage/updated` payload. The engine reports both a
+    /// cumulative `total` (billing) and the most recent turn's `last`; `last` is
+    /// what's actually resident in the context window, so that drives the ring.
+    private func applyTokenUsage(_ raw: Any?) {
+        guard let usage = raw as? [String: Any] else { return }
+        guard let window = Self.intValue(usage["modelContextWindow"]), window > 0 else { return }
+        let last = (usage["last"] as? [String: Any]) ?? (usage["total"] as? [String: Any])
+        guard let used = Self.intValue(last?["totalTokens"]) else { return }
+        contextUsage = ContextUsage(
+            usedTokens: used,
+            windowTokens: window,
+            inputTokens: Self.intValue(last?["inputTokens"]),
+            cachedInputTokens: Self.intValue(last?["cachedInputTokens"]),
+            outputTokens: Self.intValue(last?["outputTokens"]),
+            reasoningTokens: Self.intValue(last?["reasoningOutputTokens"])
+        )
+    }
+
+    /// Parses an `account/rateLimits` snapshot into the two windows shown on the
+    /// ring's hover. Codex labels them primary (short) / secondary (long); we
+    /// keep that mapping and let the view name them by their duration.
+    private func applyRateLimits(_ raw: Any?) {
+        guard let limits = raw as? [String: Any] else { return }
+        if let primary = Self.rateLimitWindow(limits["primary"]) { rateLimitPrimary = primary }
+        if let secondary = Self.rateLimitWindow(limits["secondary"]) { rateLimitSecondary = secondary }
+    }
+
+    private static func rateLimitWindow(_ raw: Any?) -> RateLimitWindowInfo? {
+        guard let w = raw as? [String: Any], let pct = doubleValue(w["usedPercent"]) else { return nil }
+        return RateLimitWindowInfo(
+            usedPercent: pct,
+            windowMinutes: doubleValue(w["windowDurationMins"]),
+            resetsAt: dateValue(w["resetsAt"])
+        )
+    }
+
+    /// Seeds the rate-limit readout on connect. After that the engine pushes
+    /// `account/rateLimits/updated` on its own as turns consume the budget.
+    func loadRateLimits() {
+        guard let rpc else { return }
+        Task {
+            guard let result = try? await rpc.request("account/rateLimits/read", params: [:]) as? [String: Any]
+            else { return }
+            applyRateLimits(result["rateLimits"] ?? result)
+        }
+    }
+
+    /// Asks Codex to compact the current thread's context — the engine summarizes
+    /// the conversation so far, freeing room in the window. Backs the `/compact`
+    /// command and the ring's "Compact" button.
+    func compactContext() {
+        guard let rpc, let threadId, !turnRunning, !isCompacting else { return }
+        isCompacting = true
+        Task {
+            do {
+                _ = try await rpc.request("thread/compact/start", params: ["threadId": threadId])
+                // Completion arrives as thread/compacted + a fresh tokenUsage; if
+                // the engine never signals, don't spin forever.
+                try? await Task.sleep(for: .seconds(20))
+                isCompacting = false
+            } catch {
+                isCompacting = false
+                errorCenter.present(.engineError(detail: error.localizedDescription))
+            }
+        }
+    }
+
+    /// Applies Codex's authoritative thread name (it auto-titles a thread after
+    /// the first turn) to the live chat, overriding Modex's local placeholder.
+    private func applyCodexThreadName(_ name: String?) {
+        guard threadId != nil,
+              let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty, trimmed != chatTitle else { return }
+        chatTitle = trimmed
+        persistCurrentChat()
+        saveSession()
+    }
+
+    private func resetUsage() {
+        contextUsage = nil
+    }
+
+    private static func intValue(_ raw: Any?) -> Int? {
+        if let value = raw as? Int { return value }
+        if let value = raw as? Double { return Int(value) }
+        if let value = raw as? NSNumber { return value.intValue }
+        return nil
+    }
+
+    private static func doubleValue(_ raw: Any?) -> Double? {
+        if let value = raw as? Double { return value }
+        if let value = raw as? Int { return Double(value) }
+        if let value = raw as? NSNumber { return value.doubleValue }
+        return nil
+    }
+
+    /// Interprets a numeric reset timestamp. Codex sends unix seconds; tolerate
+    /// milliseconds too (values past the year-2100-in-seconds mark).
+    private static func dateValue(_ raw: Any?) -> Date? {
+        guard let seconds = doubleValue(raw), seconds > 0 else { return nil }
+        let normalized = seconds > 4_000_000_000 ? seconds / 1000 : seconds
+        return Date(timeIntervalSince1970: normalized)
+    }
+
     func flushPersistence() {
         persistCurrentChat()
         saveSession()
@@ -1390,9 +1553,12 @@ final class ChatStore {
             }
             return restored
         }
+        // Prefer the exact stored chat; otherwise the most recent chat *in the
+        // restored project* so a relaunch reopens the workspace the user left,
+        // not whichever chat happens to be globally newest.
         selectedChatId = stored.selectedChatId.flatMap { id in
             chatRecords.contains(where: { $0.id == id }) ? id : nil
-        } ?? chatRecords.first?.id
+        } ?? mostRecentChat(inProject: selectedProjectId)?.id ?? chatRecords.first?.id
 
         if let selectedChatId, let chat = chatRecords.first(where: { $0.id == selectedChatId }) {
             apply(chat)
@@ -1437,6 +1603,7 @@ final class ChatStore {
     private func apply(_ chat: PersistedChat) {
         threadId = chat.threadId
         resetTurnCancellation()
+        resetUsage()
         chatTitle = chat.title
         messages = chat.messages
         selectedModel = canonicalModelLabel(for: chat.model) ?? selectedModel
@@ -1628,7 +1795,11 @@ final class ChatStore {
     /// loaded and subsequent turns continue the same thread.
     private func openCodexThread(_ id: String) {
         guard let rpc else { return }
-        persistCurrentChat()
+        // No persist here: callers persist the outgoing chat *before* changing
+        // the active project (selectChat, openProjectChat). Persisting now —
+        // after selectedProjectId may already point at the new project but before
+        // selectedChatId moves to `id` — would re-home the outgoing chat into the
+        // wrong project and make the folderless "Chats" section collapse.
         Task {
             do {
                 let result = try await rpc.request("thread/resume", params: ["threadId": id]) as? [String: Any]
@@ -1639,6 +1810,7 @@ final class ChatStore {
                 threadId = id
                 selectedChatId = id
                 resetTurnCancellation()
+                resetUsage()
                 messages = Self.messages(fromThread: thread)
                 chatTitle = Self.threadTitle(thread)
                 if let model = result["model"] as? String, let label = canonicalModelLabel(for: model) {
@@ -1819,6 +1991,41 @@ final class ChatStore {
     }
 }
 
+/// Context-window occupancy for the active conversation, mirrored from Codex's
+/// `thread/tokenUsage/updated`. `usedTokens` is the most recent turn's total
+/// (≈ what's currently in the window); the breakdown feeds the hover readout.
+struct ContextUsage: Equatable {
+    var usedTokens: Int
+    var windowTokens: Int
+    var inputTokens: Int?
+    var cachedInputTokens: Int?
+    var outputTokens: Int?
+    var reasoningTokens: Int?
+
+    /// 0…1 fill for the ring. Clamped so a slightly-over estimate never overflows.
+    var fraction: Double {
+        guard windowTokens > 0 else { return 0 }
+        return min(1, max(0, Double(usedTokens) / Double(windowTokens)))
+    }
+}
+
+/// One Codex rate-limit window (a 5-hour or weekly bucket), mirrored from
+/// `account/rateLimits`. `usedPercent` is 0…100; `resetsAt` is when it refills.
+struct RateLimitWindowInfo: Equatable {
+    var usedPercent: Double
+    var windowMinutes: Double?
+    var resetsAt: Date?
+
+    /// A short human label for the window length ("5h", "Weekly", …).
+    var windowLabel: String {
+        guard let minutes = windowMinutes else { return "Limit" }
+        if minutes >= 9_000 { return "Weekly" }
+        if minutes >= 1_380 { return "Daily" }
+        let hours = Int((minutes / 60).rounded())
+        return hours >= 1 ? "\(hours)h" : "\(Int(minutes.rounded()))m"
+    }
+}
+
 /// A row in the sidebar's Projects list.
 struct ProjectSummary: Identifiable, Hashable {
     let id: String
@@ -1835,6 +2042,16 @@ struct CodexThreadSummary: Identifiable, Hashable {
     let updatedAt: Date
 }
 
+/// Decodes `T`, but turns any decode failure into `nil` instead of throwing, so
+/// one malformed element in an array (a bad chat, message, or project) is
+/// dropped rather than losing the entire array — and the session with it.
+private struct FailableDecodable<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
+}
+
 private struct PersistedSession: Codable {
     var version: Int
     var selectedChatId: String?
@@ -1848,6 +2065,47 @@ private struct PersistedSession: Codable {
     /// Decodes to nil for sessions written before this field existed.
     var dismissedProjectPaths: [String]?
     var chats: [PersistedChat]
+
+    init(version: Int, selectedChatId: String?, selectedProjectId: String?,
+         lastActiveProjectId: String?, selectedModel: String, reasoning: ReasoningEffort,
+         permission: PermissionMode, projects: [Project],
+         dismissedProjectPaths: [String]?, chats: [PersistedChat]) {
+        self.version = version
+        self.selectedChatId = selectedChatId
+        self.selectedProjectId = selectedProjectId
+        self.lastActiveProjectId = lastActiveProjectId
+        self.selectedModel = selectedModel
+        self.reasoning = reasoning
+        self.permission = permission
+        self.projects = projects
+        self.dismissedProjectPaths = dismissedProjectPaths
+        self.chats = chats
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version, selectedChatId, selectedProjectId, lastActiveProjectId
+        case selectedModel, reasoning, permission, projects, dismissedProjectPaths, chats
+    }
+
+    // Migration-tolerant: every field but the version falls back to a sensible
+    // default, and the projects/chats arrays decode element-by-element so one bad
+    // record never quarantines the whole session (matching Project.swift's
+    // discipline). Only a genuinely unreadable root still throws → quarantine.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        selectedChatId = try c.decodeIfPresent(String.self, forKey: .selectedChatId)
+        selectedProjectId = try c.decodeIfPresent(String.self, forKey: .selectedProjectId)
+        lastActiveProjectId = try c.decodeIfPresent(String.self, forKey: .lastActiveProjectId)
+        selectedModel = try c.decodeIfPresent(String.self, forKey: .selectedModel) ?? ChatStore.defaultModelLabel
+        reasoning = try c.decodeIfPresent(ReasoningEffort.self, forKey: .reasoning) ?? .high
+        permission = try c.decodeIfPresent(PermissionMode.self, forKey: .permission) ?? .readOnly
+        projects = (try c.decodeIfPresent([FailableDecodable<Project>].self, forKey: .projects))?
+            .compactMap(\.value) ?? []
+        dismissedProjectPaths = try c.decodeIfPresent([String].self, forKey: .dismissedProjectPaths)
+        chats = (try c.decodeIfPresent([FailableDecodable<PersistedChat>].self, forKey: .chats))?
+            .compactMap(\.value) ?? []
+    }
 }
 
 private struct PersistedChat: Codable, Hashable {
@@ -1861,6 +2119,44 @@ private struct PersistedChat: Codable, Hashable {
     var messages: [ChatMessage]
     var createdAt: Date
     var updatedAt: Date
+
+    init(id: String, threadId: String?, title: String, projectId: String?, model: String,
+         reasoning: ReasoningEffort, permission: PermissionMode, messages: [ChatMessage],
+         createdAt: Date, updatedAt: Date) {
+        self.id = id
+        self.threadId = threadId
+        self.title = title
+        self.projectId = projectId
+        self.model = model
+        self.reasoning = reasoning
+        self.permission = permission
+        self.messages = messages
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, threadId, title, projectId, model, reasoning, permission, messages, createdAt, updatedAt
+    }
+
+    // Only `id` is load-bearing — a chat without one is dropped (the array decode
+    // tolerates it). Everything else falls back, and messages decode lossily so a
+    // single corrupt message doesn't lose the whole conversation.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        threadId = try c.decodeIfPresent(String.self, forKey: .threadId)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "New Chat"
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ChatStore.defaultModelLabel
+        reasoning = try c.decodeIfPresent(ReasoningEffort.self, forKey: .reasoning) ?? .high
+        permission = try c.decodeIfPresent(PermissionMode.self, forKey: .permission) ?? .readOnly
+        messages = (try c.decodeIfPresent([FailableDecodable<ChatMessage>].self, forKey: .messages))?
+            .compactMap(\.value) ?? []
+        let created = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        createdAt = created
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? created
+    }
 }
 
 private final class LocalSessionPersistence {

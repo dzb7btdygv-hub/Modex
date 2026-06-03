@@ -108,7 +108,7 @@ private struct MessageRow: View {
                 .foregroundStyle(.red)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
-                .background(.quaternary, in: .rect(cornerRadius: 12))
+                .background(.quaternary, in: .rect(cornerRadius: 10))
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
@@ -265,11 +265,16 @@ private struct UserBubble: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(.quaternary, in: .rect(cornerRadius: 16))
+                // The copy control's space is always reserved (no layout shift),
+                // so keep it permanently hittable and only fade its opacity —
+                // moving the cursor onto it never disables it mid-transit.
                 MessageCopyButton(text: text)
                     .opacity(hovering ? 1 : 0)
-                    .allowsHitTesting(hovering)
             }
         }
+        // Make the whole row — bubble, the 2pt gap, and the copy column — one
+        // contiguous hover region so there's no dead strip on the way to the icon.
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.15), value: hovering)
     }
@@ -326,8 +331,8 @@ private struct ActionIconButton: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
-                .background(hovering ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
-                .contentShape(.rect(cornerRadius: 6))
+                .background(hovering ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 7))
+                .contentShape(.rect(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

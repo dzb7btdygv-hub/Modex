@@ -92,14 +92,19 @@ struct InlineUpwardSelectorPill: View {
     var accessibilityLabel: String? = nil
     let options: [String]
     let selected: String
+    /// Optional external open-state so the popover survives a parent layout swap
+    /// (e.g. ViewThatFits rebuilding the row); falls back to internal state.
+    var isOpenBinding: Binding<Bool>? = nil
     let onSelect: (String) -> Void
 
-    @State private var isOpen = false
+    @State private var internalOpen = false
     @State private var hovering = false
+
+    private var isOpen: Binding<Bool> { isOpenBinding ?? $internalOpen }
 
     var body: some View {
         Button {
-            isOpen.toggle()
+            isOpen.wrappedValue.toggle()
         } label: {
             HStack(spacing: 5) {
                 if let systemImage {
@@ -124,10 +129,10 @@ struct InlineUpwardSelectorPill: View {
         .onHover { hovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
         .accessibilityValue(selected)
-        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+        .popover(isPresented: isOpen, arrowEdge: .bottom) {
             SelectorBox(options: options, selected: selected) { choice in
                 onSelect(choice)
-                isOpen = false
+                isOpen.wrappedValue = false
             }
         }
     }

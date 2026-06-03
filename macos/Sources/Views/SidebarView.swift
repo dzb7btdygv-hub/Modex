@@ -34,7 +34,7 @@ struct SidebarView: View {
                                 ForEach(store.projectChats(project.id)) { chat in
                                     ChatRow(
                                         chat: chat,
-                                        indent: 26,
+                                        indent: SidebarMetrics.nestedIndent,
                                         isActive: project.id == store.activeProjectId && chat.id == store.selectedChatId,
                                         onOpen: { store.openProjectChat(projectId: project.id, threadId: chat.id) }
                                     )
@@ -132,6 +132,8 @@ private struct ProjectRow: View {
     let onNewChat: () -> Void
     let onRename: () -> Void
     let onRemove: () -> Void
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -139,12 +141,12 @@ private struct ProjectRow: View {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.4))
+                    .foregroundStyle(.secondary)
                     .rotationEffect(.degrees(isExpanded ? 0 : -90))
                     .frame(width: 10)
                 Image(systemName: isActive ? "folder.fill" : "folder")
                     .font(.callout)
-                    .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    .foregroundStyle(isActive ? theme.accentColor : .secondary)
                     .frame(width: 18)
                 Text(project.name)
                     .lineLimit(1)
@@ -156,12 +158,12 @@ private struct ProjectRow: View {
                         .help("This project's folder is missing")
                 }
                 Spacer(minLength: 4)
-                Color.clear.frame(width: 46, height: 1) // room for the + and ⋯ buttons
+                Color.clear.frame(width: SidebarMetrics.hoverControlsReserve, height: 1) // room for the + and ⋯ buttons
             }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
+            .padding(.horizontal, SidebarMetrics.hInset)
+            .frame(height: SidebarMetrics.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(rowTint(isActive: isActive, hovering: hovering), in: .rect(cornerRadius: 7))
+            .background(rowTint(isActive: isActive, hovering: hovering, accent: theme.accentColor), in: .rect(cornerRadius: 7))
             .contentShape(.rect(cornerRadius: 7))
         }
         .buttonStyle(.plain)
@@ -171,11 +173,11 @@ private struct ProjectRow: View {
                     ProjectRowIconButton(systemImage: "plus", help: "New chat in this project", action: onNewChat)
                     ProjectRowMenu(onRename: onRename, onReveal: revealInFinder, onRemove: onRemove)
                 }
-                .padding(.trailing, 6)
+                .padding(.trailing, SidebarMetrics.hInset)
             }
         }
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(ModexMotion.micro(reduceMotion), value: hovering)
         .accessibilityLabel("Project \(project.name)\(isActive ? ", active" : ""), \(isExpanded ? "expanded" : "collapsed")")
     }
 
@@ -188,9 +190,11 @@ private struct ProjectRow: View {
 /// selection looks identical. `indent` nests it beneath its project.
 private struct ChatRow: View {
     let chat: RecentChat
-    var indent: CGFloat = 8
+    var indent: CGFloat = SidebarMetrics.hInset
     let isActive: Bool
     let onOpen: () -> Void
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -202,18 +206,18 @@ private struct ChatRow: View {
                 Spacer(minLength: 8)
                 Text(chat.timeAgo)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary.opacity(0.5))
+                    .foregroundStyle(.secondary)
             }
             .padding(.leading, indent)
-            .padding(.trailing, 8)
-            .frame(height: 28)
+            .padding(.trailing, SidebarMetrics.hInset)
+            .frame(height: SidebarMetrics.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(rowTint(isActive: isActive, hovering: hovering), in: .rect(cornerRadius: 7))
+            .background(rowTint(isActive: isActive, hovering: hovering, accent: theme.accentColor), in: .rect(cornerRadius: 7))
             .contentShape(.rect(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(ModexMotion.micro(reduceMotion), value: hovering)
         .accessibilityLabel("Chat, \(chat.title)")
         .accessibilityValue(chat.timeAgo)
         .accessibilityAddTraits(isActive ? .isSelected : [])
@@ -234,8 +238,8 @@ private struct ProjectRowIconButton: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
-                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 5))
-                .contentShape(.rect(cornerRadius: 5))
+                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 6))
+                .contentShape(.rect(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -258,10 +262,10 @@ private struct SidebarSectionHeader<Trailing: View>: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(collapsed ? -90 : 0))
-                        .foregroundStyle(.primary.opacity(0.5))
+                        .foregroundStyle(.secondary)
                     Text(title)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary.opacity(0.62))
+                        .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -291,10 +295,23 @@ private struct SidebarHeaderButton: View {
     }
 }
 
-/// Shared row tint so projects and chats select/hover identically.
-private func rowTint(isActive: Bool, hovering: Bool) -> Color {
-    if isActive { return Color.accentColor.opacity(0.16) }
-    return hovering ? Color.primary.opacity(0.06) : .clear
+/// Shared sidebar geometry so projects, chats, and the folderless row share one
+/// rhythm and one selection language.
+enum SidebarMetrics {
+    static let rowHeight: CGFloat = 28
+    static let hInset: CGFloat = 8
+    /// Leading inset that lines a nested chat's title up under its project's
+    /// folder icon: hInset(8) + chevron(10) + spacing(6) = 24.
+    static let nestedIndent: CGFloat = 24
+    /// Room reserved on a project row for its two 22pt hover buttons + gap.
+    static let hoverControlsReserve: CGFloat = 48
+}
+
+/// Shared row tint so projects and chats select/hover identically — selection is
+/// a clear accent wash, hover a lighter accent tint ("pink hover").
+private func rowTint(isActive: Bool, hovering: Bool, accent: Color) -> Color {
+    if isActive { return accent.opacity(0.22) }
+    return hovering ? accent.opacity(0.10) : .clear
 }
 
 private extension View {
@@ -328,8 +345,8 @@ private struct ProjectRowMenu: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
-                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 5))
-                .contentShape(.rect(cornerRadius: 5))
+                .background(hovering ? Color.primary.opacity(0.14) : Color.clear, in: .rect(cornerRadius: 6))
+                .contentShape(.rect(cornerRadius: 6))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -344,6 +361,8 @@ private struct ProjectRowMenu: View {
 /// Leaves the active project to work folderless (chats move to the "Chats" list).
 private struct NoFolderRow: View {
     let action: () -> Void
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -358,15 +377,15 @@ private struct NoFolderRow: View {
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
             }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
+            .padding(.horizontal, SidebarMetrics.hInset)
+            .frame(height: SidebarMetrics.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovering ? Color.primary.opacity(0.06) : .clear, in: .rect(cornerRadius: 7))
+            .background(hovering ? theme.accentColor.opacity(0.10) : .clear, in: .rect(cornerRadius: 7))
             .contentShape(.rect(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .animation(ModexMotion.micro(reduceMotion), value: hovering)
         .help("Work outside any project")
     }
 }
@@ -391,6 +410,7 @@ private struct AccountSurface: View {
 private struct EngineFooter: View {
     @Environment(ChatStore.self) private var store
     @Environment(UpdateStore.self) private var updates
+    @Environment(ThemeStore.self) private var theme
     @State private var expanded = false
 
     private var anim: Animation { .spring(response: 0.36, dampingFraction: 0.9) }
@@ -468,6 +488,10 @@ private struct EngineFooter: View {
 
     private var menuItems: some View {
         VStack(spacing: 2) {
+            AccountRow(title: "Settings…", icon: "gearshape") {
+                collapse()
+                theme.isSettingsPresented = true
+            }
             AccountRow(title: "Restart Codex", icon: "arrow.clockwise") {
                 collapse()
                 store.restartCodex()
@@ -526,10 +550,10 @@ private struct EngineStatusDot: View {
 /// labelled "Update" capsule. Clicking pulls + rebuilds + relaunches.
 private struct UpdateButton: View {
     @Environment(UpdateStore.self) private var updates
+    @Environment(ThemeStore.self) private var theme
     @State private var hovering = false
 
-    private let pink = Color(red: 1.0, green: 0.42, blue: 0.72)
-
+    private var accent: Color { theme.accentColor }
     private var expanded: Bool { hovering || updates.isUpdating }
 
     var body: some View {
@@ -546,12 +570,12 @@ private struct UpdateButton: View {
                 Image(systemName: updates.isUpdating ? "arrow.triangle.2.circlepath" : "arrow.down")
                     .font(.callout.weight(.bold))
             }
-            .foregroundStyle(pink)
+            .foregroundStyle(accent)
             .padding(.horizontal, expanded ? 10 : 0)
             .frame(minWidth: 26)
             .frame(height: 26)
-            .background(Capsule().fill(pink.opacity(0.14)))
-            .overlay(Capsule().strokeBorder(pink.opacity(0.35), lineWidth: 0.75))
+            .background(Capsule().fill(accent.opacity(0.14)))
+            .overlay(Capsule().strokeBorder(accent.opacity(0.35), lineWidth: 0.75))
         }
         .buttonStyle(.plain)
         .onHover { value in

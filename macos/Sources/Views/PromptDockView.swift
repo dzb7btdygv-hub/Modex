@@ -1,12 +1,30 @@
 import AppKit
 import SwiftUI
 
+/// Keys the composer's text view forwards to SwiftUI so the slash-command
+/// palette can be driven from the keyboard (↑/↓ to move, ⏎/⇥ to pick, ⎋ to
+/// dismiss) while normal typing still falls through to the field editor.
+enum ComposerKey { case up, down, submit, tab, escape }
+
 /// The prompt composer. A thin permission pill sits above-left and opens upward;
-/// beneath it a compact glass rectangle holds ＋ · the text field · send/stop.
+/// beneath it a compact glass rectangle holds the text field · send/stop. Typing
+/// "/" grows a liquid-glass command palette upward out of the bar.
 struct PromptDockView: View {
     @Environment(ChatStore.self) private var store
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var draft = ""
     @State private var textHeight: CGFloat = 32
+
+    // Selector open-states are lifted here so a ViewThatFits branch swap can't
+    // tear down an open picker mid-interaction.
+    @State private var permissionOpen = false
+    @State private var modelOpen = false
+    @State private var reasoningOpen = false
+
+    // Slash-command palette state.
+    @State private var commandIndex = 0
+    @State private var paletteDismissed = false
 
     private var hasText: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -14,10 +32,32 @@ struct PromptDockView: View {
     private var canSend: Bool { store.canSend && hasText }
     private var canStop: Bool { store.turnRunning }
 
+    private var commandMatches: [SlashCommand] {
+        guard let query = SlashCommand.query(in: draft) else { return [] }
+        return SlashCommand.matches(for: query)
+    }
+    private var showPalette: Bool { !paletteDismissed && !commandMatches.isEmpty }
+    private var clampedCommandIndex: Int {
+        guard !commandMatches.isEmpty else { return 0 }
+        return min(max(0, commandIndex), commandMatches.count - 1)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if showPalette {
+                SlashCommandPalette(
+                    commands: commandMatches,
+                    selectedIndex: clampedCommandIndex,
+                    accent: theme.accentColor,
+                    onSelect: run,
+                    onHover: { commandIndex = $0 }
+                )
+                .padding(.horizontal, 4)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             selectorRow
-            .padding(.horizontal, 4)
+                .padding(.horizontal, 8)
 
             HStack(alignment: .center, spacing: 8) {
                 ZStack(alignment: .leading) {
@@ -25,10 +65,10 @@ struct PromptDockView: View {
                         text: $draft,
                         height: $textHeight,
                         isEnabled: store.isReady,
-                        onSubmit: submit
+                        onKey: handleKey
                     )
 
-                    if draft.isEmpty {
+                    if !hasText {
                         Text("Ask Modex to build anything…")
                             .font(.body)
                             .foregroundStyle(.secondary)
@@ -39,14 +79,18 @@ struct PromptDockView: View {
                 .frame(height: textHeight, alignment: .center)
 
                 SendButton(
-                    active: hasText,
+                    active: canSend || canStop,
                     enabled: canSend || canStop,
                     isRunning: store.turnRunning,
-                    action: store.turnRunning ? store.cancelTurn : submit
+                    accent: theme.accentColor,
+                    action: store.turnRunning ? store.cancelTurn : { _ = submit() }
                 )
             }
+            // Asymmetric by design: text needs a generous left inset; the round
+            // send button nests into the stadium's right cap with a margin equal
+            // to its vertical inset (6) so it reads as concentric, not cramped.
             .padding(.leading, 16)
-            .padding(.trailing, 10)
+            .padding(.trailing, 6)
             .padding(.vertical, 6)
             .frame(minHeight: 42)
             .glassEffect(.regular, in: .rect(cornerRadius: 21))
@@ -55,6 +99,14 @@ struct PromptDockView: View {
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
             )
             .contentShape(.rect(cornerRadius: 21))
+        }
+        .animation(ModexMotion.micro(reduceMotion), value: showPalette)
+        .animation(ModexMotion.micro(reduceMotion), value: commandMatches)
+        .onChange(of: draft) { _, _ in
+            // Re-show the palette after a typed change and re-anchor the
+            // selection to the top of the freshly filtered list.
+            paletteDismissed = false
+            commandIndex = 0
         }
     }
 
@@ -80,6 +132,7 @@ struct PromptDockView: View {
     private var permissionSelector: some View {
         PermissionSelector(
             selected: store.selectedPermission,
+            isOpen: $permissionOpen,
             onSelect: store.selectPermission
         )
     }
@@ -90,7 +143,8 @@ struct PromptDockView: View {
             title: store.selectedModel,
             accessibilityLabel: "Model, \(store.selectedModel)",
             options: store.availableModels,
-            selected: store.selectedModel
+            selected: store.selectedModel,
+            isOpenBinding: $modelOpen
         ) { store.selectModel($0) }
     }
 
@@ -100,28 +154,160 @@ struct PromptDockView: View {
             title: store.reasoning.label,
             accessibilityLabel: "Reasoning, \(store.reasoning.label)",
             options: ReasoningEffort.allCases.map(\.label),
-            selected: store.reasoning.label
+            selected: store.reasoning.label,
+            isOpenBinding: $reasoningOpen
         ) { if let level = ReasoningEffort(label: $0) { store.selectReasoning(level) } }
     }
 
-    private func submit() {
-        guard canSend else { return }
-        let text = draft
+    // MARK: - Actions
+
+    /// Routes a keystroke forwarded from the text view. Returns whether it was
+    /// handled (so the field editor doesn't also act on it).
+    private func handleKey(_ key: ComposerKey) -> Bool {
+        if showPalette {
+            let count = commandMatches.count
+            switch key {
+            case .up:
+                commandIndex = (clampedCommandIndex - 1 + count) % count
+                return true
+            case .down:
+                commandIndex = (clampedCommandIndex + 1) % count
+                return true
+            case .submit, .tab:
+                run(commandMatches[clampedCommandIndex])
+                return true
+            case .escape:
+                paletteDismissed = true
+                return true
+            }
+        }
+        // No palette: only Return is special; everything else falls through.
+        switch key {
+        case .submit: return submit()
+        default: return false
+        }
+    }
+
+    /// Sends the draft, clearing it only if the engine accepted it (so a rejected
+    /// send keeps the user's text). While a turn runs, Return stops it — mirroring
+    /// the send button. Returns whether the keystroke was handled.
+    @discardableResult
+    private func submit() -> Bool {
+        if store.turnRunning {
+            store.cancelTurn()
+            return true
+        }
+        guard canSend else { return false }
+        if store.send(draft) {
+            draft = ""
+            return true
+        }
+        return false
+    }
+
+    private func run(_ command: SlashCommand) {
         draft = ""
-        store.send(text)
+        commandIndex = 0
+        paletteDismissed = false
+        switch command.action {
+        case .compact: store.compactContext()
+        case .newChat: store.startNewChat()
+        case .openSettings: theme.isSettingsPresented = true
+        case .setPermission(let mode): store.selectPermission(mode)
+        }
     }
 }
 
-/// Liquid-glass circle that fills with pink once there's something to send or stop.
-/// Springy native press + a subtle hover lift.
+// MARK: - Slash-command palette
+
+/// The liquid-glass command list that grows upward out of the composer. The
+/// selected row is washed in the accent ("faded pink"); ↑/↓ or hover move it,
+/// ⏎/⇥ or click run it.
+private struct SlashCommandPalette: View {
+    let commands: [SlashCommand]
+    let selectedIndex: Int
+    let accent: Color
+    let onSelect: (SlashCommand) -> Void
+    let onHover: (Int) -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
+                SlashCommandRow(
+                    command: command,
+                    isSelected: index == selectedIndex,
+                    accent: accent,
+                    onTap: { onSelect(command) },
+                    onHover: { if $0 { onHover(index) } }
+                )
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Slash commands")
+    }
+}
+
+private struct SlashCommandRow: View {
+    let command: SlashCommand
+    let isSelected: Bool
+    let accent: Color
+    let onTap: () -> Void
+    let onHover: (Bool) -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                Image(systemName: command.systemImage)
+                    .font(.callout)
+                    .foregroundStyle(isSelected ? accent : .secondary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(command.title)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text(command.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text(command.display)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(isSelected ? accent : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? accent.opacity(0.16) : Color.clear, in: .rect(cornerRadius: 10))
+            .contentShape(.rect(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .onHover(perform: onHover)
+        .accessibilityLabel("\(command.title), \(command.display)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Send button
+
+/// Liquid-glass circle that fills with the accent once there's something to send
+/// or stop. Springy native press + a subtle hover lift (both honor Reduce Motion).
 private struct SendButton: View {
     let active: Bool
     let enabled: Bool
     let isRunning: Bool
+    let accent: Color
     let action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
-    private let pink = Color(red: 1.0, green: 0.42, blue: 0.72)
     private var filled: Bool { active || isRunning }
 
     var body: some View {
@@ -130,16 +316,16 @@ private struct SendButton: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(filled ? Color.white : Color.secondary)
                 .frame(width: 30, height: 30)
-                .background(Circle().fill(pink).opacity(filled ? 1 : 0))
+                .background(Circle().fill(accent).opacity(filled ? 1 : 0))
                 .background(Color.clear.glassEffect(.regular, in: Circle()))
         }
         .buttonStyle(PressableStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
-        .scaleEffect(hovering && enabled ? 1.07 : 1.0)
-        .animation(.smooth(duration: 0.18), value: filled)
-        .animation(.smooth(duration: 0.18), value: isRunning)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
+        .scaleEffect(ModexMotion.hoverScale(reduceMotion, hovering && enabled ? 1.07 : 1.0))
+        .animation(ModexMotion.micro(reduceMotion), value: filled)
+        .animation(ModexMotion.micro(reduceMotion), value: isRunning)
+        .animation(ModexMotion.spring(reduceMotion), value: hovering)
         .help(isRunning ? "Stop" : "Send")
         .accessibilityLabel(isRunning ? "Stop response" : "Send message")
     }
@@ -147,15 +333,13 @@ private struct SendButton: View {
 
 private struct PermissionSelector: View {
     let selected: PermissionMode
+    @Binding var isOpen: Bool
     let onSelect: (PermissionMode) -> Void
 
-    @State private var isOpen = false
     @State private var hovering = false
 
-    private let danger = Color(red: 1.0, green: 0.31, blue: 0.18)
-
     private var tint: Color {
-        selected == .fullAccess ? danger : .secondary
+        selected == .fullAccess ? .modexDanger : .secondary
     }
 
     var body: some View {
@@ -176,7 +360,7 @@ private struct PermissionSelector: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(hovering ? tint.opacity(0.10) : Color.clear, in: .capsule)
-            .overlay(Capsule().strokeBorder(selected == .fullAccess ? danger.opacity(0.42) : .clear, lineWidth: 0.75))
+            .overlay(Capsule().strokeBorder(selected == .fullAccess ? Color.modexDanger.opacity(0.42) : .clear, lineWidth: 0.75))
             .contentShape(.capsule)
         }
         .buttonStyle(.plain)
@@ -205,10 +389,9 @@ private struct PermissionRow: View {
     let action: () -> Void
 
     @State private var hovering = false
-    private let danger = Color(red: 1.0, green: 0.31, blue: 0.18)
 
     private var tint: Color {
-        mode == .fullAccess ? danger : .primary
+        mode == .fullAccess ? .modexDanger : .primary
     }
 
     var body: some View {
@@ -236,7 +419,7 @@ private struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
     let isEnabled: Bool
-    let onSubmit: () -> Void
+    let onKey: (ComposerKey) -> Bool
 
     private let minHeight: CGFloat = 30
     private let maxHeight: CGFloat = 154
@@ -254,7 +437,7 @@ private struct ComposerTextView: NSViewRepresentable {
 
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
-        textView.onSubmit = onSubmit
+        textView.onKey = onKey
         textView.isRichText = false
         textView.isEditable = isEnabled
         textView.isSelectable = true
@@ -288,7 +471,7 @@ private struct ComposerTextView: NSViewRepresentable {
             textView.string = text
         }
         textView.isEditable = isEnabled
-        textView.onSubmit = onSubmit
+        textView.onKey = onKey
         textView.setAccessibilityLabel("Message")
         textView.setAccessibilityPlaceholderValue("Ask Modex to build anything")
         context.coordinator.parent = self
@@ -296,10 +479,15 @@ private struct ComposerTextView: NSViewRepresentable {
         scrollView.hasVerticalScroller = height >= maxHeight
 
         // Place the keyboard in the composer the first time it's ready, so the
-        // user can type immediately on launch / after the engine connects.
+        // user can type immediately on launch / after the engine connects — but
+        // only if nothing else currently owns focus (don't yank from a popover).
         if isEnabled, !context.coordinator.hasAutofocused, let window = textView.window {
-            context.coordinator.hasAutofocused = true
-            DispatchQueue.main.async { window.makeFirstResponder(textView) }
+            let firstResponder = window.firstResponder
+            let focusIsFree = firstResponder == nil || firstResponder === window
+            if focusIsFree, window.attachedSheet == nil {
+                context.coordinator.hasAutofocused = true
+                DispatchQueue.main.async { window.makeFirstResponder(textView) }
+            }
         }
     }
 
@@ -341,7 +529,7 @@ private struct ComposerTextView: NSViewRepresentable {
 }
 
 private final class SubmitTextView: NSTextView {
-    var onSubmit: (() -> Void)?
+    var onKey: ((ComposerKey) -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
@@ -349,21 +537,40 @@ private final class SubmitTextView: NSTextView {
         if isReturn {
             if event.modifierFlags.contains(.shift) {
                 insertNewlineIgnoringFieldEditor(nil)
-            } else {
-                onSubmit?()
+            } else if onKey?(.submit) != true {
+                // Not handled (nothing to send, palette closed) — fall through to
+                // normal field-editor behavior instead of swallowing the key.
+                super.keyDown(with: event)
             }
             return
+        }
+
+        switch event.keyCode {
+        case 126 where onKey?(.up) == true: return     // ↑
+        case 125 where onKey?(.down) == true: return    // ↓
+        case 53 where onKey?(.escape) == true: return   // ⎋
+        case 48 where onKey?(.tab) == true: return      // ⇥
+        default: break
         }
 
         super.keyDown(with: event)
     }
 }
 
-/// Springy press feedback for custom glass buttons.
+/// Springy press feedback for custom glass buttons (honors Reduce Motion).
 private struct PressableStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.9 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: configuration.isPressed)
+        PressableBody(configuration: configuration)
+    }
+
+    private struct PressableBody: View {
+        let configuration: Configuration
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? (reduceMotion ? 1.0 : 0.9) : 1)
+                .animation(ModexMotion.spring(reduceMotion), value: configuration.isPressed)
+        }
     }
 }

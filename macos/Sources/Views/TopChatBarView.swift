@@ -6,50 +6,63 @@ struct TopChatBarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(store.chatTitle)
-                    .font(.headline.weight(.semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(.primary)
-                    .layoutPriority(1)
-
-                Button {
-                    store.presentFolderPicker()
-                } label: {
-                    TopBarPillLabel(systemImage: "folder", title: store.selectedFolderName, showsChevron: true)
-                }
-                .buttonStyle(.plain)
-                .help("Choose project folder")
-                .accessibilityLabel("Choose project folder")
-                .accessibilityValue(store.selectedFolderPath ?? "No folder selected")
-
-                if store.activeProjectMissing {
-                    Button {
-                        store.presentFolderPicker()
-                    } label: {
-                        FolderMissingPill()
-                    }
-                    .buttonStyle(.plain)
-                    .help("This project's folder is missing — choose it again")
-                    .accessibilityLabel("Project folder missing, choose again")
-                } else if let gitBranch = store.gitBranch {
-                    BranchMenu(current: gitBranch, branches: store.gitBranches) { store.switchGitBranch($0) }
-                }
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: 720, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 28)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            titleRow
+                // Match the conversation's centered 720 column so the chat title
+                // sits directly above the message text it labels (not pinned to
+                // the far left while the messages center).
+                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                // The usage ring rides the window's true right edge, independent
+                // of the centered title column.
+                .overlay(alignment: .trailing) { UsageRingView() }
+                .padding(.horizontal, 28)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
 
             Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.58))
-                .frame(height: 0.75)
+                .fill(Color(nsColor: .separatorColor).opacity(0.7))
+                .frame(height: 1)
                 .padding(.horizontal, 28)
         }
         .background(ModexDetailSurface().opacity(0.58))
+    }
+
+    private var titleRow: some View {
+        HStack(spacing: 10) {
+            Text(store.chatTitle)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(.primary)
+
+            Button {
+                store.presentFolderPicker()
+            } label: {
+                TopBarPillLabel(systemImage: "folder", title: store.selectedFolderName, showsChevron: true)
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help("Choose project folder")
+            .accessibilityLabel("Choose project folder")
+            .accessibilityValue(store.selectedFolderPath ?? "No folder selected")
+
+            if store.activeProjectMissing {
+                Button {
+                    store.presentFolderPicker()
+                } label: {
+                    FolderMissingPill()
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("This project's folder is missing — choose it again")
+                .accessibilityLabel("Project folder missing, choose again")
+            } else if let gitBranch = store.gitBranch {
+                BranchMenu(current: gitBranch, branches: store.gitBranches) { store.switchGitBranch($0) }
+            }
+
+            // Reserve a lane on the right so the pills never slide under the ring.
+            Spacer(minLength: 36)
+        }
     }
 }
 
@@ -115,6 +128,7 @@ private struct TopBarPillLabel: View {
     let title: String
     var showsChevron = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -139,8 +153,8 @@ private struct TopBarPillLabel: View {
                 .strokeBorder(Color.primary.opacity(hovering ? 0.18 : 0.10), lineWidth: 0.75)
         )
         .contentShape(.rect(cornerRadius: 7))
-        .scaleEffect(hovering ? 1.03 : 1.0)
+        .scaleEffect(ModexMotion.hoverScale(reduceMotion, hovering ? 1.03 : 1.0))
         .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.15), value: hovering)
+        .animation(ModexMotion.micro(reduceMotion), value: hovering)
     }
 }
