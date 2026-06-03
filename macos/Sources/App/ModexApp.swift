@@ -42,7 +42,8 @@ struct ModexApp: App {
         .commands {
             // Keep every toolbar action reachable from the menu bar (HIG).
             CommandGroup(replacing: .newItem) {
-                Button("New Chat") {}.keyboardShortcut("n")
+                Button("New Chat") { store.startNewChat() }
+                    .keyboardShortcut("n")
             }
         }
     }

@@ -421,7 +421,9 @@ final class ChatStore {
                     "turnId": currentTurnId,
                 ])
             } catch {
-                guard turnRunning else { return }
+                // If the turn already reached turn/completed (which clears these
+                // flags), don't contradict it with a cancel-failed banner.
+                guard turnRunning, turnCancellationRequested else { return }
                 turnRunning = false
                 clearPendingMessages()
                 resetTurnCancellation()
@@ -571,10 +573,10 @@ final class ChatStore {
                   chatRecords[index].messages.isEmpty, chatRecords[index].threadId == nil {
             // Target project has no history; fold the current empty, unsent
             // canvas into it rather than spawning a duplicate empty chat.
-            chatRecords[index].projectId = id
-            chatRecords[index].model = selectedModel
-            chatRecords[index].reasoning = reasoning
-            chatRecords[index].permission = selectedPermission
+            // persistCurrentChat writes every field (projectId, model, reasoning,
+            // permission, messages, updatedAt) from the single source of truth so
+            // the record can't drift out of a hand-copied subset.
+            persistCurrentChat()
             applySelectedProject()
         } else if currentChatIndex != nil {
             // The active chat belongs elsewhere and this project has no history —
@@ -664,8 +666,9 @@ final class ChatStore {
         } else if let index = currentChatIndex,
                   chatRecords[index].messages.isEmpty, chatRecords[index].threadId == nil {
             // Fold the current empty canvas into the folderless context.
-            chatRecords[index].projectId = nil
-            chatRecords[index].permission = selectedPermission
+            // selectedProjectId is already nil and permission already Read only,
+            // so persistCurrentChat captures the full, consistent record.
+            persistCurrentChat()
             applySelectedProject()
         } else {
             // Active chat belongs to a project — start a fresh folderless one.
@@ -748,6 +751,7 @@ final class ChatStore {
     private func loadModelCatalog(_ rpc: CodexRPCClient) async {
         var loaded: [ModelOption] = []
         var cursor: String?
+        var page = 0
 
         do {
             repeat {
@@ -759,8 +763,13 @@ final class ChatStore {
 
                 let models = result["data"] as? [[String: Any]] ?? []
                 loaded.append(contentsOf: models.compactMap(Self.modelOption))
-                cursor = result["nextCursor"] as? String
-            } while cursor != nil
+                // Stop if the server stops advancing the cursor, and hard-cap the
+                // page count so a buggy/stable cursor can't loop forever.
+                let next = result["nextCursor"] as? String
+                if next == cursor { break }
+                cursor = next
+                page += 1
+            } while cursor != nil && page < 20
         } catch {
             logger.error("Could not load Codex model catalog: \(error.localizedDescription, privacy: .public)")
             return
@@ -1116,8 +1125,15 @@ final class ChatStore {
             } else if turnRunning {
                 setActiveTurnStatus(.thinking)
             }
-            persistCurrentChat()
-            saveSession()
+            // Persistence is coalesced to turn boundaries: re-encoding the whole
+            // session on every streamed item is O(history) per token. `messages`
+            // is the live source of truth, and `turn/completed` (plus the
+            // scene-phase/shutdown flushes) persists the finished turn. Only save
+            // here when no turn is running (e.g. a late completion after cancel).
+            if !turnRunning {
+                persistCurrentChat()
+                saveSession()
+            }
 
         case "turn/completed":
             turnRunning = false
@@ -1179,20 +1195,40 @@ final class ChatStore {
     /// Surfaces a Codex-reported error in the banner, classifying sandbox /
     /// permission rejections so we can suggest raising permissions.
     private func presentEngineError(_ detail: String) {
-        let error = Self.isPermissionError(detail)
-            ? ModexError.permissionDenied(detail: detail)
-            : ModexError.engineError(detail: detail)
+        let error: ModexError
+        if Self.isAuthError(detail) {
+            error = .notAuthenticated(detail: detail)
+        } else if Self.isPermissionError(detail) {
+            error = .permissionDenied(detail: detail)
+        } else {
+            error = .engineError(detail: detail)
+        }
         setTaskStatus(.failed(error.title))
         errorCenter.present(error) { [weak self] in self?.resendLastTurn() }
     }
 
-    /// Maps a thrown turn error to a permission rejection or a generic send
-    /// failure based on its text.
+    /// Maps a thrown turn error to an auth prompt, a permission rejection, or a
+    /// generic send failure based on its text.
     private static func turnError(from error: Error) -> ModexError {
         let detail = error.localizedDescription
+        if isAuthError(detail) { return .notAuthenticated(detail: detail) }
         return isPermissionError(detail)
             ? .permissionDenied(detail: detail)
             : .turnSendFailed(detail: detail)
+    }
+
+    /// Heuristic: does this error read like Codex is signed out / unauthorized
+    /// (vs. a sandbox rejection or a generic failure)? Anchored on auth-specific
+    /// phrasing so it doesn't misfire on unrelated errors and send the user to
+    /// `codex login` when that wouldn't help.
+    static func isAuthError(_ text: String) -> Bool {
+        let needles = ["not logged in", "logged out", "log in to", "please log in",
+                       "sign in to", "codex login", "unauthorized", "401",
+                       "authentication failed", "not authenticated", "no api key",
+                       "missing api key", "invalid api key", "token has expired",
+                       "expired token", "credentials"]
+        let lower = text.lowercased()
+        return needles.contains { lower.contains($0) }
     }
 
     /// Heuristic: does this error read like a sandbox/permission/approval
@@ -1200,7 +1236,7 @@ final class ChatStore {
     /// filesystem-specific signals so generic words like "rejected"/"blocked"
     /// (which appear in unrelated network/server errors) don't misfire and
     /// suggest raising permissions when that wouldn't help.
-    private static func isPermissionError(_ text: String) -> Bool {
+    static func isPermissionError(_ text: String) -> Bool {
         let needles = ["sandbox", "seatbelt", "permission", "denied", "not permitted",
                        "operation not permitted", "read-only", "read only",
                        "eacces", "eperm", "not allowed", "not approved",

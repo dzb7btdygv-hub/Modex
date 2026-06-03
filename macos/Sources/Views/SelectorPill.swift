@@ -21,7 +21,7 @@ private struct PillLabel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .glassEffect(.regular, in: .capsule)
-        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.75))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75))
     }
 }
 

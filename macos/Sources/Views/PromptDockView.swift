@@ -20,19 +20,6 @@ struct PromptDockView: View {
             .padding(.horizontal, 4)
 
             HStack(alignment: .center, spacing: 8) {
-                Button {
-                    // Attach context.
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Add context")
-                .accessibilityLabel("Add context")
-
                 ZStack(alignment: .leading) {
                     ComposerTextView(
                         text: $draft,
@@ -58,14 +45,14 @@ struct PromptDockView: View {
                     action: store.turnRunning ? store.cancelTurn : submit
                 )
             }
-            .padding(.leading, 10)
+            .padding(.leading, 16)
             .padding(.trailing, 10)
             .padding(.vertical, 6)
             .frame(minHeight: 42)
             .glassEffect(.regular, in: .rect(cornerRadius: 21))
             .overlay(
                 RoundedRectangle(cornerRadius: 21, style: .continuous)
-                    .strokeBorder(.white.opacity(0.12), lineWidth: 0.75)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
             )
             .contentShape(.rect(cornerRadius: 21))
         }
@@ -307,11 +294,21 @@ private struct ComposerTextView: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.updateHeight()
         scrollView.hasVerticalScroller = height >= maxHeight
+
+        // Place the keyboard in the composer the first time it's ready, so the
+        // user can type immediately on launch / after the engine connects.
+        if isEnabled, !context.coordinator.hasAutofocused, let window = textView.window {
+            context.coordinator.hasAutofocused = true
+            DispatchQueue.main.async { window.makeFirstResponder(textView) }
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextView
         weak var textView: SubmitTextView?
+        /// Auto-focus the composer only once, so we never yank focus back from a
+        /// popover/menu the user has since opened.
+        var hasAutofocused = false
 
         init(_ parent: ComposerTextView) {
             self.parent = parent

@@ -1,5 +1,13 @@
 name: Release
 
+# Builds and publishes the native SwiftUI macOS app (the shipping product).
+#
+# Prerequisites this workflow assumes and CANNOT be verified on current hosted
+# runners: the macOS 26 SDK (Xcode 26), and Developer ID signing + notarization
+# secrets. Until GitHub provides an Xcode 26 image, cut releases from a local
+# Xcode 26 machine using docs/release-signing.md. Treat this file as the intended
+# pipeline, not a verified-green one.
+
 on:
   push:
     tags:
@@ -13,6 +21,11 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
     steps:
       # actions/checkout v5.0.1
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -21,22 +34,48 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: rustup toolchain install stable --profile minimal
+      - run: brew install xcodegen
       - run: npm ci
-      - name: Build DMG
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri:build
+      - run: npm run prepare:codex
+      - run: xcodegen generate --spec macos/project.yml --project macos
+
+      - name: Build native app
+        run: |
+          SIGN_ARGS=(CODE_SIGNING_ALLOWED=NO)
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            SIGN_ARGS=(
+              CODE_SIGNING_ALLOWED=YES
+              "CODE_SIGN_IDENTITY=$APPLE_SIGNING_IDENTITY"
+              "DEVELOPMENT_TEAM=$APPLE_TEAM_ID"
+              ENABLE_HARDENED_RUNTIME=YES
+            )
+          fi
+          xcodebuild -project macos/Modex.xcodeproj -scheme Modex \
+            -configuration Release -derivedDataPath macos/build/DerivedData \
+            "${SIGN_ARGS[@]}" build
+
+      - name: Package DMG
+        run: |
+          APP="macos/build/DerivedData/Build/Products/Release/Modex.app"
+          [ -d "$APP" ] || { echo "Built app not found at $APP" >&2; exit 1; }
+          mkdir -p dist/dmg && cp -R "$APP" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "Modex" -srcfolder dist/dmg -ov -format UDZO \
+            "dist/Modex-${GITHUB_REF_NAME}.dmg"
+
+      - name: Notarize & staple
+        if: ${{ env.APPLE_ID != '' }}
+        run: |
+          xcrun notarytool submit "dist/Modex-${GITHUB_REF_NAME}.dmg" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" --wait
+          xcrun stapler staple "dist/Modex-${GITHUB_REF_NAME}.dmg"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            src-tauri/target/release/bundle/dmg/*.dmg \
+            "dist/Modex-${GITHUB_REF_NAME}.dmg" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes

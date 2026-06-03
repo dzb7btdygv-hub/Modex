@@ -17,6 +17,12 @@ final class UpdateStore {
     private(set) var isUpdating = false
     private(set) var message: String?
 
+    /// Whether this copy can honestly update itself. The updater rebuilds from a
+    /// source checkout, so it only works when Modex is running from one with the
+    /// build toolchain (xcodegen + xcodebuild) and the install script present. A
+    /// shipped/standalone bundle can't, so the Update affordance stays hidden.
+    private(set) var canSelfUpdate = false
+
     /// User-facing update failure, shown as a compact chip near the update
     /// control rather than the app-wide error banner. `nil` when healthy.
     private(set) var updateError: ModexError?
@@ -31,8 +37,10 @@ final class UpdateStore {
     private var repoRoot: URL?
     private var checkTask: Task<Void, Never>?
 
-    /// Tightened from 5 min → 20 s so a freshly-pushed change is noticed quickly.
-    private let pollIntervalNanos: UInt64 = 20_000_000_000
+    /// Polls for upstream changes every 5 minutes. This spawns `git fetch` plus a
+    /// few `rev-parse` subprocesses, so it stays in the minutes range rather than
+    /// hammering the remote; it only runs at all on a self-updatable source build.
+    private let pollIntervalNanos: UInt64 = 300_000_000_000
 
     private static let toolPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
     private static let installedCommitKey = "ModexSourceCommit"
@@ -40,12 +48,32 @@ final class UpdateStore {
     func start() {
         guard checkTask == nil else { return }
         checkTask = Task {
+            await refreshCapability()
             await computeVersion()
+            // Don't poll the remote at all unless this build can actually update
+            // itself — a shipped copy has no honest update path.
+            guard canSelfUpdate else { return }
             await checkForUpdates()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: pollIntervalNanos)
                 await checkForUpdates()
             }
+        }
+    }
+
+    /// Determines whether self-update is possible in this environment: a source
+    /// checkout (install script present) plus the build toolchain on PATH.
+    private func refreshCapability() async {
+        let repo = try? await resolveRepoRoot()
+        let hasScript = repo.map {
+            FileManager.default.fileExists(atPath: $0.appending(path: "script/install_macos_app.sh").path)
+        } ?? false
+        canSelfUpdate = hasScript && Self.toolExists("xcodegen") && Self.toolExists("xcodebuild")
+    }
+
+    private static func toolExists(_ name: String) -> Bool {
+        toolPath.split(separator: ":").contains {
+            FileManager.default.isExecutableFile(atPath: String($0) + "/" + name)
         }
     }
 
@@ -77,7 +105,7 @@ final class UpdateStore {
     }
 
     func checkForUpdates() async {
-        guard !isUpdating else { return }
+        guard !isUpdating, canSelfUpdate else { return }
         isChecking = true
         defer { isChecking = false }
 
@@ -96,9 +124,10 @@ final class UpdateStore {
 
             if let installed = installedSourceCommit() {
                 isUpdateAvailable = installed != remote
-            } else if isRunningInstalledBundle(outside: repo) {
-                isUpdateAvailable = true
             } else {
+                // No build stamp to compare against — fall back to the checkout's
+                // own HEAD vs its upstream, instead of assuming every unstamped
+                // build is out of date (which nagged on each plain xcodebuild).
                 isUpdateAvailable = local != remote
             }
             message = nil
@@ -155,7 +184,6 @@ final class UpdateStore {
         }
         candidates.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
         candidates.append(Bundle.main.bundleURL)
-        candidates.append(FileManager.default.homeDirectoryForCurrentUser.appending(path: "Desktop/Modex"))
 
         for candidate in candidates {
             if let repo = repoRoot(containing: candidate) { return repo }
@@ -215,12 +243,6 @@ final class UpdateStore {
         }
         let commit = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return commit.isEmpty ? nil : commit
-    }
-
-    private func isRunningInstalledBundle(outside repo: URL) -> Bool {
-        let bundle = Bundle.main.bundleURL.standardizedFileURL
-        let repo = repo.standardizedFileURL
-        return bundle.pathExtension == "app" && !bundle.path.hasPrefix(repo.path + "/")
     }
 
     private func runProcess(_ executable: String, arguments: [String], in directory: URL) async throws -> String {
