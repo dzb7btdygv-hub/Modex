@@ -52,7 +52,7 @@ struct ErrorBannerView: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(style.tint.opacity(0.32), lineWidth: 0.75)
+                .strokeBorder(style.borderColor, lineWidth: 0.75)
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(error.title). \(error.explanation)")
@@ -137,21 +137,28 @@ struct ErrorBannerView: View {
 struct SeverityStyle {
     let symbol: String
     let tint: Color
+    /// A visible hairline even for `.info`, whose `.secondary` tint would
+    /// otherwise render a near-invisible border.
+    let borderColor: Color
 
     init(_ severity: ModexError.Severity) {
         switch severity {
         case .info:
             symbol = "info.circle.fill"
             tint = .secondary
+            borderColor = Color.primary.opacity(0.12)
         case .warning:
             symbol = "exclamationmark.triangle.fill"
             tint = .orange
+            borderColor = Color.orange.opacity(0.32)
         case .error:
             symbol = "exclamationmark.octagon.fill"
             tint = .red
+            borderColor = Color.red.opacity(0.32)
         case .fatal:
             symbol = "bolt.trianglebadge.exclamationmark.fill"
             tint = .red
+            borderColor = Color.red.opacity(0.32)
         }
     }
 }

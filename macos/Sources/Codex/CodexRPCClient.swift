@@ -52,6 +52,10 @@ actor CodexRPCClient {
     /// socket close, or timeout).
     @discardableResult
     func request(_ method: String, params: [String: Any], timeout: Duration = CodexRPCClient.defaultTimeout) async throws -> Any? {
+        // Fast-fail anything issued after close() instead of relying on the
+        // socket to throw or the 120s timeout to fire — a request raced against
+        // teardown would otherwise hang for two minutes.
+        guard !closed else { throw CodexError.message("Codex disconnected.") }
         let id = nextId
         nextId += 1
 
@@ -146,7 +150,10 @@ actor CodexRPCClient {
         // Server-initiated request (needs a reply) vs. fire-and-forget notification.
         if let id {
             await notifyServerRequest(method, started: true)
-            respondToServerRequest(id: id, method: method)
+            // Await the reply send so we only report the approval cycle "done"
+            // once the decline/answer is actually on the wire — otherwise the UI
+            // could clear "Waiting for permission" while the engine still waits.
+            await respondToServerRequest(id: id, method: method)
             await notifyServerRequest(method, started: false)
         } else {
             let params = object["params"] as? [String: Any]
@@ -160,7 +167,7 @@ actor CodexRPCClient {
         await handler(method, started)
     }
 
-    private func respondToServerRequest(id: Int, method: String) {
+    private func respondToServerRequest(id: Int, method: String) async {
         let result = Self.defaultServerResponse(for: method)
         let envelope: [String: Any]
         if let result {
@@ -175,7 +182,25 @@ actor CodexRPCClient {
             let data = try? JSONSerialization.data(withJSONObject: envelope)
         else { return }
         let text = String(decoding: data, as: UTF8.self)
-        Task { try? await task.send(.string(text)) }
+        do {
+            try await task.send(.string(text))
+        } catch {
+            // The reply didn't make it out — the socket is broken. Tear down like
+            // the receive loop does so the turn recovers instead of the engine
+            // hanging on an approval Modex believes it answered.
+            handleSocketFailure("Codex disconnected.")
+        }
+    }
+
+    /// Shared teardown for an unexpected socket failure: close once, fail every
+    /// pending request, and notify the UI. Idempotent.
+    private func handleSocketFailure(_ reason: String) {
+        guard !closed else { return }
+        closed = true
+        task.cancel(with: .goingAway, reason: nil)
+        failPending(reason)
+        let handler = onClose
+        Task { @MainActor in handler(reason) }
     }
 
     /// Mirrors the safe defaults from the TypeScript client: decline approvals,

@@ -11,10 +11,7 @@ struct RootView: View {
             SidebarView(selection: $selection)
                 .navigationSplitViewColumnWidth(min: 224, ideal: 256, max: 320)
         } detail: {
-            // When the sidebar is hidden the traffic lights + toggle move into
-            // the detail pane's top-left, so the title bar must drop back below
-            // them rather than ride up into the titlebar strip.
-            ChatPaneView(sidebarCollapsed: columnVisibility == .detailOnly)
+            ChatPaneView()
         }
         // No window title — the composer owns model and reasoning controls.
         .navigationTitle("")
@@ -22,6 +19,8 @@ struct RootView: View {
         .background(ModexRootSurface().ignoresSafeArea())
         // Very small, faint, dynamic version readout.
         .overlay(alignment: .bottomTrailing) { versionReadout }
+        // Centered Settings panel that dims + blurs the whole window behind it.
+        .overlay { SettingsOverlay() }
         .onAppear {
             selection = store.selectedChatId.map(SidebarItem.recent)
         }

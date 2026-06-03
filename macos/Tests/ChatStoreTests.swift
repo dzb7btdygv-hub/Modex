@@ -131,4 +131,38 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertTrue(blocks.contains { if case .bulleted(let items) = $0 { return items == ["one", "two"] }; return false })
         XCTAssertTrue(blocks.contains { if case .numbered(let items) = $0 { return items == ["first", "second"] }; return false })
     }
+
+    // MARK: - Forward-compatible decoding (a newer build's value must not throw)
+
+    func testUnknownReasoningEffortDecodesToDefault() throws {
+        let value = try JSONDecoder().decode(ReasoningEffort.self, from: Data("\"ultra\"".utf8))
+        XCTAssertEqual(value, .high)
+    }
+
+    func testUnknownPermissionModeDecodesToReadOnly() throws {
+        let value = try JSONDecoder().decode(PermissionMode.self, from: Data("\"workspace\"".utf8))
+        XCTAssertEqual(value, .readOnly)
+    }
+
+    func testUnknownMessageRoleDecodesToSystem() throws {
+        let json = #"{ "id": "x", "role": "tool", "text": "hi", "pending": false }"#
+        let message = try JSONDecoder().decode(ChatMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(message.role, .system)
+    }
+
+    // MARK: - Slash command palette filtering
+
+    func testSlashCommandQueryRecognizesCommandMode() {
+        XCTAssertEqual(SlashCommand.query(in: "/"), "")
+        XCTAssertEqual(SlashCommand.query(in: "/com"), "com")
+        // A space means the user moved past the command into a real prompt.
+        XCTAssertNil(SlashCommand.query(in: "/compact now"))
+        XCTAssertNil(SlashCommand.query(in: "hello"))
+    }
+
+    func testSlashCommandMatchingFiltersByPrefix() {
+        XCTAssertEqual(SlashCommand.matches(for: "com").map(\.token), ["compact"])
+        XCTAssertEqual(SlashCommand.matches(for: "").count, SlashCommand.all.count)
+        XCTAssertTrue(SlashCommand.matches(for: "zzz").isEmpty)
+    }
 }

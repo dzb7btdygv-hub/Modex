@@ -4,6 +4,13 @@ enum MessageRole: String, Codable {
     case user
     case assistant
     case system
+
+    /// An unknown role from a newer build degrades to `.system` rather than
+    /// throwing (which would lose the whole session on decode).
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = MessageRole(rawValue: raw) ?? .system
+    }
 }
 
 struct ChatMessage: Identifiable, Codable, Hashable {
@@ -62,6 +69,13 @@ enum PermissionMode: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// An unknown access mode from a newer build degrades to the safest option
+    /// (`.readOnly`) instead of throwing and quarantining the session.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PermissionMode(rawValue: raw) ?? .readOnly
+    }
+
     func sandboxPolicy(folderPath: String?) -> [String: Any] {
         switch self {
         case .readOnly:
@@ -96,6 +110,13 @@ enum ReasoningEffort: String, CaseIterable, Identifiable, Codable {
     init?(label: String) {
         guard let match = Self.allCases.first(where: { $0.label == label }) else { return nil }
         self = match
+    }
+
+    /// An unknown effort from a newer build degrades to `.high` (the default)
+    /// instead of throwing and quarantining the session.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ReasoningEffort(rawValue: raw) ?? .high
     }
 }
 

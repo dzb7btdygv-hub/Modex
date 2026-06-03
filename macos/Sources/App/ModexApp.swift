@@ -8,6 +8,7 @@ struct ModexApp: App {
     @State private var store: ChatStore
     @State private var updates = UpdateStore()
     @State private var windowState = WindowStateStore()
+    @State private var theme = ThemeStore()
 
     init() {
         let errors = ErrorCenter()
@@ -22,8 +23,12 @@ struct ModexApp: App {
                 .environment(store)
                 .environment(updates)
                 .environment(windowState)
+                .environment(theme)
+                .tint(theme.accentColor)
+                .preferredColorScheme(theme.appearance.colorScheme)
                 .background(WindowConfigurator(windowState: windowState))
                 .onAppear {
+                    theme.applyAppearance()
                     store.bootIfNeeded()
                     updates.start()
                 }
@@ -44,6 +49,11 @@ struct ModexApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") { store.startNewChat() }
                     .keyboardShortcut("n")
+            }
+            // Standard ⌘, opens the in-window Settings overlay.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { theme.isSettingsPresented = true }
+                    .keyboardShortcut(",", modifiers: .command)
             }
         }
     }
