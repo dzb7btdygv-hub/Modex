@@ -14,6 +14,7 @@ struct ChatPaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             TopChatBarView()
+                .zIndex(2)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Float the banner just above the composer. Using an overlay
