@@ -11,17 +11,21 @@ struct UsageRingView: View {
     @State private var ringHovered = false
     @State private var cardHovered = false
     @State private var showCard = false
+    @State private var isPinned = false
+    @State private var closeTask: Task<Void, Never>?
 
     private var fraction: Double { store.contextUsage?.fraction ?? 0 }
     private var hasData: Bool { store.contextUsage != nil || store.rateLimitPrimary != nil || store.rateLimitSecondary != nil }
 
     var body: some View {
         Button {
-            showCard.toggle()
+            isPinned.toggle()
+            updateCard()
         } label: {
             UsageRing(fraction: fraction, accent: theme.accentColor, indeterminate: store.isCompacting)
                 .frame(width: 22, height: 22)
-                .contentShape(.circle)
+                .frame(width: 32, height: 32)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -31,10 +35,32 @@ struct UsageRingView: View {
         .help("Context window usage")
         .accessibilityLabel("Context window usage")
         .accessibilityValue(accessibilityValue)
-        .popover(isPresented: $showCard, arrowEdge: .bottom) {
-            UsageCard()
-                .onHover { cardHovered = $0; updateCard() }
+        .overlay(alignment: .topTrailing) {
+            if showCard {
+                UsageCard()
+                    .background {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(.regularMaterial)
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75)
+                    )
+                    .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+                    .contentShape(.rect(cornerRadius: 12))
+                    .offset(y: 32)
+                    .onHover { hovering in
+                        cardHovered = hovering
+                        updateCard()
+                    }
+                    .transition(.opacity)
+                    .zIndex(20)
+            }
         }
+        .zIndex(20)
+        .onDisappear { closeTask?.cancel() }
     }
 
     private var accessibilityValue: String {
@@ -45,12 +71,13 @@ struct UsageRingView: View {
     /// Opens immediately on hover; closes after a short grace period so the
     /// cursor can travel into the card to read it or click Compact.
     private func updateCard() {
-        if ringHovered || cardHovered {
+        closeTask?.cancel()
+        if ringHovered || cardHovered || isPinned {
             showCard = true
         } else {
-            Task { @MainActor in
+            closeTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))
-                if !ringHovered && !cardHovered { showCard = false }
+                if !ringHovered && !cardHovered && !isPinned { showCard = false }
             }
         }
     }
