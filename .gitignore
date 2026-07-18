@@ -12,4 +12,5 @@ macos/build/
 macos/Modex.xcodeproj/
 .env
 .env.*
+!.env.example
 .playwright-mcp/
