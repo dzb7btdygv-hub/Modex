@@ -18,7 +18,7 @@
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@openai/codex": "0.135.0",
+    "@openai/codex": "0.137.0",
     "@tauri-apps/cli": "2.11.2",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
